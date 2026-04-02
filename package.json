@@ -1,6 +1,6 @@
 {
   "name": "@eleansphere/be-core",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Generic Express/Sequelize backend core for multiple projects",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
