@@ -1,4 +1,4 @@
-import express, { Express } from 'express';
+import express, { Express, RequestHandler } from 'express';
 import cors, { CorsOptions } from 'cors';
 import bodyParser from 'body-parser';
 import { createSequelize } from '../db/create-sequelize';
@@ -15,6 +15,8 @@ export interface AppConfig {
   modelConfigs?: ModelConfig[];
   plugins?: ProjectPlugin[];
   cors?: CorsOptions;
+  /** Global middleware registered before all routes (including auto-generated ones) */
+  middleware?: RequestHandler[];
   auth?: {
     modelName: string; // name of the user model (e.g. 'user')
     expiresIn?: string;
@@ -51,6 +53,11 @@ export function createApp(config: AppConfig): Express {
   app.use(cors(config.cors));
   app.use(express.json());
   app.use(bodyParser.json());
+
+  // 3.5 Register global middleware before routes
+  for (const mw of config.middleware ?? []) {
+    app.use(mw);
+  }
 
   // 4. Mount auto-generated CRUD routes from modelConfigs
   if (config.modelConfigs) {
