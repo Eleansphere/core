@@ -297,7 +297,7 @@ Content-Type: application/json
 
 ### createVerifyToken
 
-Factory function that returns an Express middleware for verifying JWT tokens.
+Factory function that returns an Express middleware for verifying JWT tokens. Attaches the decoded payload to `req.body` — use this only when you need the payload there (e.g. the `/auth/me` endpoint).
 
 ```typescript
 createVerifyToken(jwtSecret: string): RequestHandler
@@ -306,8 +306,8 @@ createVerifyToken(jwtSecret: string): RequestHandler
 ```typescript
 const verifyToken = createVerifyToken(process.env.JWT_SECRET);
 
-app.get('/api/protected', verifyToken, (req, res) => {
-  res.json({ userId: req.body.userId });
+app.get('/api/auth/me', verifyToken, (req, res) => {
+  res.json({ id: req.body.id, email: req.body.email });
 });
 ```
 
@@ -317,7 +317,7 @@ app.get('/api/protected', verifyToken, (req, res) => {
 
 Factory function that returns an Express middleware for decoding a JWT token and attaching the user to `req.user`. Unlike `createVerifyToken`, this does **not** overwrite `req.body`, making it safe to use on routes that also read a request body.
 
-Used internally by `mountModelRoutes` for user-scoped models. Can also be used manually on custom routes.
+Used automatically by `mountModelRoutes` when `userScoped: true`. Can also be used manually on custom routes.
 
 ```typescript
 createExtractUser(jwtSecret: string): RequestHandler
@@ -332,7 +332,7 @@ app.get('/api/my-resource', extractUser, (req, res) => {
 });
 ```
 
-> **Note:** Use `createVerifyToken` when you need the decoded payload in `req.body` (e.g. the `/auth/me` endpoint). Use `createExtractUser` for all other protected routes.
+> **Note:** Prefer `createExtractUser` for all protected routes. Use `createVerifyToken` only when the decoded payload must be in `req.body`.
 
 ---
 

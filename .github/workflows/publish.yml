@@ -3,7 +3,7 @@ name: Publish to GitHub Packages
 on:
   push:
     branches:
-      - main
+      - master
       - dev
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: npm install
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
       - name: Build
         run: npm run build
@@ -36,7 +36,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          if [ "${{ github.ref_name }}" = "master" ]; then
             npm version minor --no-git-tag-version
           else
             npm version patch --no-git-tag-version
