@@ -11,8 +11,8 @@ export function createVerifyToken(jwtSecret: string): RequestHandler {
     const token = authHeader.split(' ')[1];
 
     try {
-      const decoded = jwt.verify(token, jwtSecret);
-      req.body = decoded;
+      const decoded = jwt.verify(token, jwtSecret) as { id: string; email: string };
+      (req as any).user = decoded;
       next();
     } catch {
       return res.status(401).json({ message: 'Neplatný nebo vypršený token' });

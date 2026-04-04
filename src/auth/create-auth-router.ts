@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { ModelStatic, Model } from 'sequelize';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { createVerifyToken } from './create-verify-token';
+import { createExtractUser } from './create-verify-token';
 
 export interface AuthConfig {
   jwtSecret: string;
@@ -12,7 +12,7 @@ export interface AuthConfig {
 export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig): Router {
   const { jwtSecret, expiresIn = '30m' } = config;
   const router = Router();
-  const verifyToken = createVerifyToken(jwtSecret);
+  const extractUser = createExtractUser(jwtSecret);
 
   router.post('/login', async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -39,10 +39,11 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
     }
   });
 
-  router.get('/me', verifyToken, (req: Request, res: Response) => {
+  router.get('/me', extractUser, (req: Request, res: Response) => {
+    const user = (req as any).user;
     res.json({
-      id: req.body.id,
-      email: req.body.email,
+      id: user.id,
+      email: user.email,
     });
   });
 

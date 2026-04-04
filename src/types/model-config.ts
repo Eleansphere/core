@@ -22,4 +22,5 @@ export interface ModelConfig {
   routePath?: string; // defaults to /api/${name}s
   log?: boolean;
   userScoped?: boolean; // if true, all routes require auth and getAll filters by ownerId
+  skipAutoRoutes?: boolean; // if true, model is registered but no CRUD routes are mounted (use for models with custom plugin routes)
 }

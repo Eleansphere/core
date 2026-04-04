@@ -142,6 +142,23 @@ const noteConfig: ModelConfig = {
 };
 ```
 
+**`skipAutoRoutes`:**
+
+Set `skipAutoRoutes: true` when a model needs custom plugin routes instead of auto-generated CRUD. The Sequelize model is still initialized and available via `models['name']` in plugin `registerRoutes`, but no routes are mounted automatically.
+
+```typescript
+// index.ts — model is registered but routes come from plugin.ts
+modelConfigs: [
+  { ...userEntity.config, skipAutoRoutes: true },
+]
+
+// plugin.ts — custom routes with bcrypt hooks
+registerRoutes(app, _sequelize, models) {
+  const extractUser = createExtractUser(process.env.JWT_SECRET!);
+  app.use('/api/users', extractUser, createCrudRouter({ model: models['user'], ... }));
+}
+```
+
 **Available field validations:**
 
 | Validation  | Type      | Description                    |
@@ -234,7 +251,7 @@ createCrudRouter(options: GenericCrudOptions): Router
 | Method   | Path   | Description          |
 |----------|--------|----------------------|
 | `POST`   | `/`    | Create a record      |
-| `GET`    | `/`    | Get all records      |
+| `GET`    | `/`    | Get records — returns `{ data: T[], total: number }`. Supports `?page=1&limit=20` for server-side pagination. |
 | `GET`    | `/:id` | Get a record by ID   |
 | `PUT`    | `/:id` | Update a record      |
 | `DELETE` | `/:id` | Delete a record      |
@@ -297,7 +314,7 @@ Content-Type: application/json
 
 ### createVerifyToken
 
-Factory function that returns an Express middleware for verifying JWT tokens. Attaches the decoded payload to `req.body` — use this only when you need the payload there (e.g. the `/auth/me` endpoint).
+Factory function that returns an Express middleware for verifying JWT tokens. Attaches the decoded payload to `req.user`.
 
 ```typescript
 createVerifyToken(jwtSecret: string): RequestHandler
@@ -306,8 +323,8 @@ createVerifyToken(jwtSecret: string): RequestHandler
 ```typescript
 const verifyToken = createVerifyToken(process.env.JWT_SECRET);
 
-app.get('/api/auth/me', verifyToken, (req, res) => {
-  res.json({ id: req.body.id, email: req.body.email });
+app.get('/api/protected', verifyToken, (req, res) => {
+  res.json({ id: (req as any).user.id });
 });
 ```
 
@@ -315,9 +332,9 @@ app.get('/api/auth/me', verifyToken, (req, res) => {
 
 ### createExtractUser
 
-Factory function that returns an Express middleware for decoding a JWT token and attaching the user to `req.user`. Unlike `createVerifyToken`, this does **not** overwrite `req.body`, making it safe to use on routes that also read a request body.
+Alias for `createVerifyToken` — attaches the decoded JWT payload to `req.user`. Safe to use on any route including those with a request body.
 
-Used automatically by `mountModelRoutes` when `userScoped: true`. Can also be used manually on custom routes.
+Used automatically by `mountModelRoutes` when `userScoped: true`.
 
 ```typescript
 createExtractUser(jwtSecret: string): RequestHandler
@@ -326,13 +343,12 @@ createExtractUser(jwtSecret: string): RequestHandler
 ```typescript
 const extractUser = createExtractUser(process.env.JWT_SECRET);
 
-app.get('/api/my-resource', extractUser, (req, res) => {
+app.post('/api/my-resource', extractUser, (req, res) => {
   const userId = (req as any).user.id;
-  res.json({ userId });
+  // req.body is untouched
+  res.json({ userId, data: req.body });
 });
 ```
-
-> **Note:** Prefer `createExtractUser` for all protected routes. Use `createVerifyToken` only when the decoded payload must be in `req.body`.
 
 ---
 

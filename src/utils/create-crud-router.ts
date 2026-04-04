@@ -34,13 +34,22 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
     }
   });
 
-  // READ all
+  // READ all (with optional server-side pagination via ?page=1&limit=20)
   router.get('/', ...middleware, async (req: Request, res: Response) => {
     try {
       logAction('READ all request');
       const where = userScoped ? { ownerId: (req as any).user?.id } : undefined;
-      const entities = await model.findAll({ where });
-      res.status(200).json(entities);
+      const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+
+      if (page !== undefined && limit !== undefined) {
+        const offset = (page - 1) * limit;
+        const { count, rows } = await model.findAndCountAll({ where, limit, offset });
+        res.status(200).json({ data: rows, total: count, page, limit });
+      } else {
+        const rows = await model.findAll({ where });
+        res.status(200).json({ data: rows, total: rows.length });
+      }
     } catch (err) {
       logAction('READ all error', err);
       res.status(500).json({ error: (err as Error).message });

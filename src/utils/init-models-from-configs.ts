@@ -91,6 +91,8 @@ export function mountModelRoutes(
   jwtSecret?: string
 ): void {
   for (const config of configs) {
+    if (config.skipAutoRoutes) continue;
+
     const model = models[config.name];
     const routePath = config.routePath ?? `/api/${config.name}s`;
     const validate = createValidationHook(config);
