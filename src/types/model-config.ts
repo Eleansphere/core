@@ -21,4 +21,5 @@ export interface ModelConfig {
   fields: Record<string, FieldConfig>;
   routePath?: string; // defaults to /api/${name}s
   log?: boolean;
+  userScoped?: boolean; // if true, all routes require auth and getAll filters by ownerId
 }

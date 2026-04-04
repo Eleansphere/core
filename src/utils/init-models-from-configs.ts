@@ -4,6 +4,7 @@ import { ModelConfig, FieldConfig, FieldType } from '../types/model-config';
 import { CoreEntity } from '../types/core-entity';
 import { createCrudRouter } from './create-crud-router';
 import { generateId } from './generate-id';
+import { createExtractUser } from '../auth/create-verify-token';
 
 const fieldTypeMap: Record<FieldType, any> = {
   STRING: DataTypes.STRING,
@@ -86,12 +87,14 @@ export function initModelsFromConfigs(
 export function mountModelRoutes(
   configs: ModelConfig[],
   models: Record<string, ModelStatic<any>>,
-  app: Express
+  app: Express,
+  jwtSecret?: string
 ): void {
   for (const config of configs) {
     const model = models[config.name];
     const routePath = config.routePath ?? `/api/${config.name}s`;
     const validate = createValidationHook(config);
+    const middleware = config.userScoped && jwtSecret ? [createExtractUser(jwtSecret)] : [];
 
     app.use(
       routePath,
@@ -100,6 +103,8 @@ export function mountModelRoutes(
         prefix: config.prefix,
         generateId,
         log: config.log ?? false,
+        userScoped: config.userScoped,
+        middleware,
         hooks: {
           beforeCreate: validate,
           beforeUpdate: validate,

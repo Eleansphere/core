@@ -3,7 +3,7 @@ import { Model } from 'sequelize';
 import { GenericCrudOptions } from '../types/crud-router-types';
 
 export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>): Router {
-  const { model, prefix, generateId, log, hooks, middleware = [] } = options;
+  const { model, prefix, generateId, log, hooks, middleware = [], userScoped = false } = options;
   const router = Router();
 
   function logAction(action: string, payload?: unknown) {
@@ -35,10 +35,11 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
   });
 
   // READ all
-  router.get('/', ...middleware, async (_req: Request, res: Response) => {
+  router.get('/', ...middleware, async (req: Request, res: Response) => {
     try {
       logAction('READ all request');
-      const entities = await model.findAll();
+      const where = userScoped ? { ownerId: (req as any).user?.id } : undefined;
+      const entities = await model.findAll({ where });
       res.status(200).json(entities);
     } catch (err) {
       logAction('READ all error', err);

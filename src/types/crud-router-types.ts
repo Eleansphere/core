@@ -13,4 +13,5 @@ export type GenericCrudOptions<T extends Model> = {
   log?: boolean;
   hooks?: CrudHooks<T>;
   middleware?: RequestHandler[];
+  userScoped?: boolean;
 };

@@ -16,6 +16,7 @@ A reusable backend core library for Express.js + Sequelize applications. Elimina
   - [createCrudRouter](#createcrudrouter)
   - [createAuthRouter](#createauthrouter)
   - [createVerifyToken](#createverifytoken)
+  - [createExtractUser](#createextractuser)
   - [createFileRouter](#createfilerouter)
   - [generateId](#generateid)
 - [Types](#types)
@@ -96,6 +97,7 @@ const productConfig: ModelConfig = {
   prefix: 'prod',         // Prefix for ID generation (e.g. "prod_abc123...")
   routePath: '/products', // Optional custom route path (default: /api/{name}s)
   logging: true,          // Enable action logging (optional)
+  userScoped: true,       // Scope all routes to the authenticated user (optional, see below)
   fields: [
     {
       name: 'title',
@@ -116,6 +118,27 @@ const productConfig: ModelConfig = {
       email: true,         // Validate email format
     },
   ],
+};
+```
+
+**User-scoped models:**
+
+Setting `userScoped: true` on a `ModelConfig` does two things:
+
+1. All routes for that model require a valid JWT (`Authorization: Bearer <token>`).
+2. `GET /` filters results to only records where `ownerId` matches the authenticated user's ID.
+
+This means each user only sees and can interact with their own data. The model must have an `ownerId` field for this to work correctly.
+
+```typescript
+const noteConfig: ModelConfig = {
+  name: 'note',
+  prefix: 'n',
+  userScoped: true,
+  fields: {
+    content: { type: 'TEXT', required: true },
+    ownerId: { type: 'STRING', required: true },
+  },
 };
 ```
 
@@ -287,6 +310,29 @@ app.get('/api/protected', verifyToken, (req, res) => {
   res.json({ userId: req.body.userId });
 });
 ```
+
+---
+
+### createExtractUser
+
+Factory function that returns an Express middleware for decoding a JWT token and attaching the user to `req.user`. Unlike `createVerifyToken`, this does **not** overwrite `req.body`, making it safe to use on routes that also read a request body.
+
+Used internally by `mountModelRoutes` for user-scoped models. Can also be used manually on custom routes.
+
+```typescript
+createExtractUser(jwtSecret: string): RequestHandler
+```
+
+```typescript
+const extractUser = createExtractUser(process.env.JWT_SECRET);
+
+app.get('/api/my-resource', extractUser, (req, res) => {
+  const userId = (req as any).user.id;
+  res.json({ userId });
+});
+```
+
+> **Note:** Use `createVerifyToken` when you need the decoded payload in `req.body` (e.g. the `/auth/me` endpoint). Use `createExtractUser` for all other protected routes.
 
 ---
 

@@ -61,7 +61,7 @@ export function createApp(config: AppConfig): Express {
 
   // 4. Mount auto-generated CRUD routes from modelConfigs
   if (config.modelConfigs) {
-    mountModelRoutes(config.modelConfigs, configModels, app);
+    mountModelRoutes(config.modelConfigs, configModels, app, config.jwtSecret);
   }
 
   // 5. Mount auth routes

@@ -23,7 +23,7 @@ export { initModelsFromConfigs, mountModelRoutes } from './utils/init-models-fro
 // Auth
 export { createAuthRouter } from './auth/create-auth-router';
 export type { AuthConfig } from './auth/create-auth-router';
-export { createVerifyToken } from './auth/create-verify-token';
+export { createVerifyToken, createExtractUser } from './auth/create-verify-token';
 
 // Files
 export { createFileRouter } from './files/create-file-router';
