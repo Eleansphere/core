@@ -1,6 +1,7 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { Model } from 'sequelize';
 import { GenericCrudOptions } from '../types/crud-router-types';
+import { HttpError } from '../app/error-handler';
 
 export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>): Router {
   const { model, prefix, generateId, log, hooks, middleware = [], userScoped = false } = options;
@@ -12,7 +13,7 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
   }
 
   // CREATE
-  router.post('/', ...middleware, async (req: Request, res: Response) => {
+  router.post('/', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       let data = { ...req.body };
       if (generateId && prefix) {
@@ -30,12 +31,12 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
       logAction('CREATE success', entity.toJSON());
     } catch (err) {
       logAction('CREATE error', err);
-      res.status(500).json({ error: (err as Error).message });
+      next(err);
     }
   });
 
   // READ all (with optional server-side pagination via ?page=1&limit=20)
-  router.get('/', ...middleware, async (req: Request, res: Response) => {
+  router.get('/', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       logAction('READ all request');
       const where = userScoped ? { ownerId: (req as any).user?.id } : undefined;
@@ -52,34 +53,34 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
       }
     } catch (err) {
       logAction('READ all error', err);
-      res.status(500).json({ error: (err as Error).message });
+      next(err);
     }
   });
 
   // READ by ID
-  router.get('/:id', ...middleware, async (req: Request, res: Response) => {
+  router.get('/:id', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       logAction('READ by ID request', req.params.id);
       const entity = await model.findByPk(req.params.id);
       if (!entity) {
         logAction('READ by ID not found', req.params.id);
-        return res.status(404).json({ message: 'Not found' });
+        return next(new HttpError(404, `${model.name} not found`));
       }
       res.json(entity);
     } catch (err) {
       logAction('READ by ID error', err);
-      res.status(500).json({ error: (err as Error).message });
+      next(err);
     }
   });
 
   // UPDATE
-  router.put('/:id', ...middleware, async (req: Request, res: Response) => {
+  router.put('/:id', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       logAction('UPDATE request', { id: req.params.id, body: req.body });
       const entity = await model.findByPk(req.params.id);
       if (!entity) {
         logAction('UPDATE not found', req.params.id);
-        return res.status(404).json({ message: 'Not found' });
+        return next(new HttpError(404, `${model.name} not found`));
       }
       let data = { ...req.body };
 
@@ -91,25 +92,25 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
       logAction('UPDATE success', entity.toJSON());
     } catch (err) {
       logAction('UPDATE error', err);
-      res.status(500).json({ error: (err as Error).message });
+      next(err);
     }
   });
 
   // DELETE
-  router.delete('/:id', ...middleware, async (req: Request, res: Response) => {
+  router.delete('/:id', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       logAction('DELETE request', req.params.id);
       const entity = await model.findByPk(req.params.id);
       if (!entity) {
         logAction('DELETE not found', req.params.id);
-        return res.status(404).json({ message: 'Not found' });
+        return next(new HttpError(404, `${model.name} not found`));
       }
       await entity.destroy();
       res.status(204).send();
       logAction('DELETE success', req.params.id);
     } catch (err) {
       logAction('DELETE error', err);
-      res.status(500).json({ error: (err as Error).message });
+      next(err);
     }
   });
 

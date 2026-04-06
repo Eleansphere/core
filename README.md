@@ -19,6 +19,7 @@ A reusable backend core library for Express.js + Sequelize applications. Elimina
   - [createExtractUser](#createextractuser)
   - [createFileRouter](#createfilerouter)
   - [generateId](#generateid)
+  - [defaultErrorHandler](#defaulterrorhandler)
 - [Types](#types)
 - [Development](#development)
 
@@ -78,14 +79,18 @@ This starts an Express server with auto-generated CRUD endpoints at `/api/produc
 
 ### AppConfig
 
-| Field          | Type              | Description                                          |
-|----------------|-------------------|------------------------------------------------------|
-| `port`         | `number`          | Port the server listens on                           |
-| `db`           | `DbConfig`        | PostgreSQL connection configuration                  |
-| `jwtSecret`    | `string`          | Secret key for signing JWT tokens                    |
-| `userModel`    | `Model`           | Sequelize user model (required for auth endpoints)   |
-| `modelConfigs` | `ModelConfig[]`   | Declarative database model configurations            |
-| `plugins`      | `ProjectPlugin[]` | Plugins with custom models and routes                |
+| Field            | Type                    | Description                                                            |
+|------------------|-------------------------|------------------------------------------------------------------------|
+| `port`           | `number`                | Port the server listens on                                             |
+| `databaseUrl`    | `string`                | PostgreSQL connection string                                           |
+| `schema`         | `string`                | Optional database schema                                               |
+| `jwtSecret`      | `string`                | Secret key for signing JWT tokens                                      |
+| `modelConfigs`   | `ModelConfig[]`         | Declarative database model configurations                              |
+| `plugins`        | `ProjectPlugin[]`       | Plugins with custom models and routes                                  |
+| `cors`           | `CorsOptions`           | CORS configuration passed to the `cors` package                        |
+| `middleware`     | `RequestHandler[]`      | Global middleware registered before all routes                         |
+| `auth`           | `{ modelName, expiresIn? }` | Enables auth routes; `modelName` is the registered user model name |
+| `errorHandler`   | `ErrorRequestHandler`   | Custom error handler — overrides the built-in `defaultErrorHandler`   |
 
 ### ModelConfig
 
@@ -213,8 +218,9 @@ Automatically handles:
 - JSON body parsing and CORS
 - Database model synchronization
 - Mounting CRUD routes for all `modelConfigs`
-- Mounting auth routes (`/api/auth/login`, `/api/auth/me`) when `userModel` is provided
+- Mounting auth routes (`/api/auth/login`, `/api/auth/me`) when `auth` is configured
 - Plugin registration
+- Centralized error handling via `defaultErrorHandler` (registered last, after all plugins)
 
 ---
 
@@ -380,6 +386,58 @@ generateId(prefix: string): string
 ```typescript
 generateId('user');    // => "user_k3j2h9x1m..."
 generateId('product'); // => "product_a8f3n2p7q..."
+```
+
+---
+
+### defaultErrorHandler
+
+The built-in Express error middleware registered automatically at the end of `createApp()`, after all plugins. Catches any error passed via `next(err)` from routes or middleware.
+
+```typescript
+import { defaultErrorHandler } from '@eleansphere/be-core';
+```
+
+**Error response format:**
+
+```json
+{ "error": "Not Found", "message": "Resource not found", "statusCode": 404 }
+```
+
+| Field       | Description                                                                    |
+|-------------|--------------------------------------------------------------------------------|
+| `error`     | Short error name. For 5xx: always `"Internal Server Error"`                    |
+| `message`   | Human-readable detail. For 5xx: always `"An unexpected error occurred"`        |
+| `statusCode`| HTTP status code repeated in the body                                          |
+
+5xx errors are logged to `console.error`. 4xx errors are passed through as-is.
+
+**`HttpError` — typed HTTP errors:**
+
+Use `HttpError` to throw errors with an HTTP status code from any route or middleware. The `defaultErrorHandler` picks up `statusCode` automatically and formats the response.
+
+```typescript
+import { HttpError } from '@eleansphere/be-core';
+
+// In a route or plugin:
+throw new HttpError(404, 'Book not found');
+// → { error: 'Not Found', message: 'Book not found', statusCode: 404 }
+
+throw new HttpError(400, 'Title is required');
+// → { error: 'Bad Request', message: 'Title is required', statusCode: 400 }
+```
+
+Supported status codes with automatic error names: `400`, `401`, `403`, `404`, `409`, `422`. Any other code uses `'Error'` as the name.
+
+**Override with a custom error handler:**
+
+```typescript
+createApp({
+  // ...
+  errorHandler: (err, _req, res, _next) => {
+    res.status(err.statusCode ?? 500).json({ myCustomFormat: err.message });
+  },
+});
 ```
 
 ---

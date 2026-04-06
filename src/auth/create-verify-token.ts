@@ -1,11 +1,12 @@
 import { Request, Response, NextFunction, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
+import { HttpError } from '../app/error-handler';
 
 export function createVerifyToken(jwtSecret: string): RequestHandler {
-  return function verifyToken(req: Request, res: Response, next: NextFunction) {
+  return function verifyToken(req: Request, _res: Response, next: NextFunction) {
     const authHeader = req.headers['authorization'];
     if (!authHeader) {
-      return res.status(401).json({ message: 'Chybí autorizační token' });
+      return next(new HttpError(401, 'Authorization token is missing'));
     }
 
     const token = authHeader.split(' ')[1];
@@ -15,16 +16,16 @@ export function createVerifyToken(jwtSecret: string): RequestHandler {
       (req as any).user = decoded;
       next();
     } catch {
-      return res.status(401).json({ message: 'Neplatný nebo vypršený token' });
+      next(new HttpError(401, 'Invalid or expired token'));
     }
   };
 }
 
 export function createExtractUser(jwtSecret: string): RequestHandler {
-  return function extractUser(req: Request, res: Response, next: NextFunction) {
+  return function extractUser(req: Request, _res: Response, next: NextFunction) {
     const authHeader = req.headers['authorization'];
     if (!authHeader) {
-      return res.status(401).json({ message: 'Chybí autorizační token' });
+      return next(new HttpError(401, 'Authorization token is missing'));
     }
 
     const token = authHeader.split(' ')[1];
@@ -34,7 +35,7 @@ export function createExtractUser(jwtSecret: string): RequestHandler {
       (req as any).user = decoded;
       next();
     } catch {
-      return res.status(401).json({ message: 'Neplatný nebo vypršený token' });
+      next(new HttpError(401, 'Invalid or expired token'));
     }
   };
 }

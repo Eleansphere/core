@@ -4,6 +4,7 @@ export { DataTypes, Sequelize } from 'sequelize';
 // App
 export { createApp } from './app/create-app';
 export type { AppConfig } from './app/create-app';
+export { defaultErrorHandler, HttpError } from './app/error-handler';
 
 // Database
 export { createSequelize } from './db/create-sequelize';

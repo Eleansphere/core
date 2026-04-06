@@ -1,4 +1,4 @@
-import express, { Express, RequestHandler } from 'express';
+import express, { Express, RequestHandler, ErrorRequestHandler } from 'express';
 import cors, { CorsOptions } from 'cors';
 import bodyParser from 'body-parser';
 import { createSequelize } from '../db/create-sequelize';
@@ -6,6 +6,7 @@ import { createAuthRouter } from '../auth/create-auth-router';
 import { ProjectPlugin } from '../types/plugin-types';
 import { ModelConfig } from '../types/model-config';
 import { initModelsFromConfigs, mountModelRoutes } from '../utils/init-models-from-configs';
+import { defaultErrorHandler } from './error-handler';
 
 export interface AppConfig {
   databaseUrl: string;
@@ -21,6 +22,8 @@ export interface AppConfig {
     modelName: string; // name of the user model (e.g. 'user')
     expiresIn?: string;
   };
+  /** Override the default error handler. Must be an Express 4-arg error middleware. */
+  errorHandler?: ErrorRequestHandler;
 }
 
 export function createApp(config: AppConfig): Express {
@@ -85,6 +88,9 @@ export function createApp(config: AppConfig): Express {
   for (const plugin of config.plugins ?? []) {
     plugin.registerRoutes(app, sequelize, allModels);
   }
+
+  // 7. Register error handler last — catches errors from all routes and plugins
+  app.use(config.errorHandler ?? defaultErrorHandler);
 
   const port = config.port ?? 3000;
   app.listen(port, () => console.log(`Server running on port ${port}`));
