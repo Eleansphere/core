@@ -29,3 +29,7 @@ export { createVerifyToken, createExtractUser } from './auth/create-verify-token
 // Files
 export { createFileRouter } from './files/create-file-router';
 export type { FileFieldConfig } from './files/create-file-router';
+
+// Email
+export { createEmailService } from './email/create-email-service';
+export type { EmailConfig, EmailService, SendEmailOptions, EmailTemplateFunction } from './email/email-types';

@@ -2,11 +2,13 @@ import express, { Express, RequestHandler, ErrorRequestHandler } from 'express';
 import cors, { CorsOptions } from 'cors';
 import bodyParser from 'body-parser';
 import { createSequelize } from '../db/create-sequelize';
-import { createAuthRouter } from '../auth/create-auth-router';
+import { createAuthRouter, PasswordResetConfig } from '../auth/create-auth-router';
 import { ProjectPlugin } from '../types/plugin-types';
 import { ModelConfig } from '../types/model-config';
 import { initModelsFromConfigs, mountModelRoutes } from '../utils/init-models-from-configs';
 import { defaultErrorHandler } from './error-handler';
+import { EmailConfig, EmailService } from '../email/email-types';
+import { createEmailService } from '../email/create-email-service';
 
 export interface AppConfig {
   databaseUrl: string;
@@ -18,9 +20,11 @@ export interface AppConfig {
   cors?: CorsOptions;
   /** Global middleware registered before all routes (including auto-generated ones) */
   middleware?: RequestHandler[];
+  email?: EmailConfig;
   auth?: {
     modelName: string; // name of the user model (e.g. 'user')
     expiresIn?: string;
+    passwordReset?: PasswordResetConfig;
   };
   /** Override the default error handler. Must be an Express 4-arg error middleware. */
   errorHandler?: ErrorRequestHandler;
@@ -31,6 +35,10 @@ export function createApp(config: AppConfig): Express {
     databaseUrl: config.databaseUrl,
     schema: config.schema,
   });
+
+  const emailService: EmailService | undefined = config.email
+    ? createEmailService(config.email)
+    : undefined;
 
   // 1. Init models from configs (generic)
   const configModels = config.modelConfigs
@@ -78,6 +86,8 @@ export function createApp(config: AppConfig): Express {
     const authRouter = createAuthRouter(userModel, {
       jwtSecret: config.jwtSecret,
       expiresIn: config.auth.expiresIn,
+      emailService,
+      passwordReset: config.auth.passwordReset,
     });
     app.use('/api/auth', authRouter);
   }
@@ -86,7 +96,7 @@ export function createApp(config: AppConfig): Express {
 
   // 6. Register custom routes from plugins
   for (const plugin of config.plugins ?? []) {
-    plugin.registerRoutes(app, sequelize, allModels);
+    plugin.registerRoutes(app, sequelize, allModels, emailService);
   }
 
   // 7. Register error handler last — catches errors from all routes and plugins
