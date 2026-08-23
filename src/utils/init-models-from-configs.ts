@@ -5,6 +5,7 @@ import { CoreEntity } from '../types/core-entity';
 import { createCrudRouter } from './create-crud-router';
 import { generateId } from './generate-id';
 import { createExtractUser } from '../auth/create-verify-token';
+import { HttpError } from '../app/error-handler';
 
 const fieldTypeMap: Record<FieldType, any> = {
   STRING: DataTypes.STRING,
@@ -36,31 +37,31 @@ function createValidationHook(config: ModelConfig) {
       const isEmpty = value === undefined || value === null || value === '';
 
       if (fieldCfg.required && isEmpty) {
-        throw new Error(`${field} is required`);
+        throw new HttpError(400, `${field} is required`);
       }
 
       if (!isEmpty) {
         if (fieldCfg.maxLength && typeof value === 'string' && value.length > fieldCfg.maxLength) {
-          throw new Error(`${field} must be at most ${fieldCfg.maxLength} characters`);
+          throw new HttpError(400, `${field} must be at most ${fieldCfg.maxLength} characters`);
         }
         if (fieldCfg.minLength && typeof value === 'string' && value.length < fieldCfg.minLength) {
-          throw new Error(`${field} must be at least ${fieldCfg.minLength} characters`);
+          throw new HttpError(400, `${field} must be at least ${fieldCfg.minLength} characters`);
         }
         if (fieldCfg.format === 'email' && !/.+@.+\..+/.test(String(value))) {
-          throw new Error(`${field} must be a valid email`);
+          throw new HttpError(400, `${field} must be a valid email`);
         }
         if (fieldCfg.format === 'url') {
           try {
             new URL(String(value));
           } catch {
-            throw new Error(`${field} must be a valid URL`);
+            throw new HttpError(400, `${field} must be a valid URL`);
           }
         }
         if (fieldCfg.min !== undefined && value < fieldCfg.min) {
-          throw new Error(`${field} must be at least ${fieldCfg.min}`);
+          throw new HttpError(400, `${field} must be at least ${fieldCfg.min}`);
         }
         if (fieldCfg.max !== undefined && value > fieldCfg.max) {
-          throw new Error(`${field} must be at most ${fieldCfg.max}`);
+          throw new HttpError(400, `${field} must be at most ${fieldCfg.max}`);
         }
       }
     }
@@ -78,6 +79,20 @@ export function initModelsFromConfigs(
     class DynamicModel extends CoreEntity {}
     Object.defineProperty(DynamicModel, 'name', { value: config.name });
     DynamicModel.initModel(sequelize, buildAttributes(config.fields), { modelName: config.name });
+
+    const sensitiveFields = Object.entries(config.fields)
+      .filter(([, field]) => field.sensitive)
+      .map(([name]) => name);
+
+    if (sensitiveFields.length) {
+      const originalToJSON = DynamicModel.prototype.toJSON;
+      DynamicModel.prototype.toJSON = function (this: any) {
+        const values = originalToJSON.call(this) as Record<string, unknown>;
+        for (const field of sensitiveFields) delete values[field];
+        return values;
+      };
+    }
+
     models[config.name] = DynamicModel as unknown as ModelStatic<any>;
   }
 

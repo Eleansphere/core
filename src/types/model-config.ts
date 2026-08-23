@@ -13,6 +13,8 @@ export interface FieldValidation {
 export interface FieldConfig extends FieldValidation {
   type: FieldType;
   default?: any;
+  /** If true, the field is stripped from JSON responses (e.g. password hashes) */
+  sensitive?: boolean;
 }
 
 export interface ModelConfig {
