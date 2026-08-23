@@ -9,6 +9,13 @@ const HTTP_STATUS_NAMES: Record<number, string> = {
   422: 'Unprocessable Entity',
 };
 
+// Sequelize errors that map to a specific HTTP status instead of a generic 500
+const SEQUELIZE_ERROR_STATUS: Record<string, number> = {
+  SequelizeUniqueConstraintError: 409,
+  SequelizeValidationError: 400,
+  SequelizeForeignKeyConstraintError: 409,
+};
+
 export class HttpError extends Error {
   statusCode: number;
 
@@ -22,6 +29,7 @@ export class HttpError extends Error {
 interface AppError extends Error {
   status?: number;
   statusCode?: number;
+  errors?: { message: string }[];
 }
 
 export function defaultErrorHandler(
@@ -30,14 +38,20 @@ export function defaultErrorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
-  const statusCode = err.status ?? err.statusCode ?? 500;
-  const error =
-    statusCode >= 500 ? 'Internal Server Error' : err.name !== 'Error' ? err.name : 'Error';
-  const message = statusCode >= 500 ? 'An unexpected error occurred' : err.message;
+  const sequelizeStatus = SEQUELIZE_ERROR_STATUS[err.name];
+  const statusCode = err.status ?? err.statusCode ?? sequelizeStatus ?? 500;
 
   if (statusCode >= 500) {
     console.error('[be-core] Unhandled error', err);
+    res
+      .status(statusCode)
+      .json({ error: 'Internal Server Error', message: 'An unexpected error occurred', statusCode });
+    return;
   }
+
+  const error = sequelizeStatus ? HTTP_STATUS_NAMES[statusCode] : err.name !== 'Error' ? err.name : 'Error';
+  const message =
+    sequelizeStatus && err.errors?.length ? err.errors.map((e) => e.message).join(', ') : err.message;
 
   res.status(statusCode).json({ error, message, statusCode });
 }

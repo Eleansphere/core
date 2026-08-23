@@ -13,6 +13,8 @@ import { createEmailService } from '../email/create-email-service';
 export interface AppConfig {
   databaseUrl: string;
   schema?: string;
+  /** Whether to connect to the database over SSL. Defaults to true; set false for local dev databases without SSL. */
+  dbSsl?: boolean;
   jwtSecret: string;
   port?: number;
   modelConfigs?: ModelConfig[];
@@ -34,6 +36,7 @@ export function createApp(config: AppConfig): Express {
   const sequelize = createSequelize({
     databaseUrl: config.databaseUrl,
     schema: config.schema,
+    ssl: config.dbSsl,
   });
 
   const emailService: EmailService | undefined = config.email
