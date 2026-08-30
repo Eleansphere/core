@@ -18,6 +18,7 @@ A reusable backend core library for Express.js + Sequelize applications. Elimina
   - [createVerifyToken](#createverifytoken)
   - [createExtractUser](#createextractuser)
   - [createFileRouter](#createfilerouter)
+  - [File service (AppConfig.storage)](#file-service-appconfigstorage)
   - [generateId](#generateid)
   - [defaultErrorHandler](#defaulterrorhandler)
 - [Types](#types)
@@ -90,6 +91,7 @@ This starts an Express server with auto-generated CRUD endpoints at `/api/produc
 | `cors`           | `CorsOptions`           | CORS configuration passed to the `cors` package                        |
 | `middleware`     | `RequestHandler[]`      | Global middleware registered before all routes                         |
 | `auth`           | `{ modelName, expiresIn? }` | Enables auth routes; `modelName` is the registered user model name |
+| `storage`        | `StorageConfig`         | Enables the detached file service — see [File service](#file-service-appconfigstorage) |
 | `errorHandler`   | `ErrorRequestHandler`   | Custom error handler — overrides the built-in `defaultErrorHandler`   |
 
 ### ModelConfig
@@ -360,7 +362,9 @@ app.post('/api/my-resource', extractUser, (req, res) => {
 
 ### createFileRouter
 
-Creates a router for uploading and downloading files stored as BLOBs in the database.
+Creates a router for uploading and downloading files stored as BLOBs in the database. Legacy —
+prefer the [file service](#file-service-appconfigstorage) for anything with more than a handful
+of files, since a BLOB column is pulled into memory by every query on that model.
 
 ```typescript
 createFileRouter(Model: Model, fieldConfig: FileFieldConfig): Router
@@ -372,6 +376,92 @@ createFileRouter(Model: Model, fieldConfig: FileFieldConfig): Router
 |--------|--------------------|-------------------------|
 | `POST` | `/:id/{fieldName}` | Upload a file           |
 | `GET`  | `/:id/{fieldName}` | Download / serve a file |
+
+---
+
+### File service (`AppConfig.storage`)
+
+Stores uploaded files in an S3-compatible bucket (Cloudflare R2, AWS S3, MinIO, Backblaze B2) and
+keeps only a `File` metadata row in Postgres. Set `AppConfig.storage` to enable it — be-core then
+registers a `File` model and mounts the file service router (default `/api/files`).
+
+```typescript
+import { createApp, createExtractUser } from '@eleansphere/be-core';
+
+createApp({
+  // ...
+  storage: {
+    s3: {
+      endpoint: process.env.R2_ENDPOINT!,        // https://<accountid>.r2.cloudflarestorage.com
+      bucket: process.env.R2_BUCKET!,
+      accessKeyId: process.env.R2_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+      publicBaseUrl: process.env.R2_PUBLIC_BASE_URL, // e.g. https://cdn.example.com — optional
+    },
+    writeMiddleware: [createExtractUser(process.env.JWT_SECRET!)], // guards POST + DELETE
+  },
+});
+```
+
+**`StorageConfig`:**
+
+| Field                | Type                | Description                                                                 |
+|----------------------|---------------------|-----------------------------------------------------------------------------|
+| `s3`                 | `S3StorageConfig`   | Bucket connection (see below)                                                |
+| `s3.endpoint`        | `string`            | Bucket endpoint URL                                                          |
+| `s3.bucket`          | `string`            | Bucket name                                                                  |
+| `s3.accessKeyId`     | `string`            | Access key                                                                   |
+| `s3.secretAccessKey` | `string`            | Secret key                                                                   |
+| `s3.region`          | `string`            | Defaults to `'auto'` (correct for R2)                                        |
+| `s3.publicBaseUrl`   | `string`            | Public/CDN base URL. When set, public files are served by redirecting here   |
+| `s3.forcePathStyle`  | `boolean`           | Path-style URLs (`endpoint/bucket/key`). Default `false`                     |
+| `writeMiddleware`    | `RequestHandler[]`  | Middleware guarding `POST` and `DELETE`. `GET` stays public                  |
+| `preferRedirect`     | `boolean`           | 302-redirect public files to their CDN URL instead of proxying. Default `true` |
+| `maxFileSize`        | `number`            | Max upload size in bytes. Default 25 MiB                                      |
+| `routePath`          | `string`            | Router mount path. Default `/api/files`                                      |
+
+**Endpoints:**
+
+| Method   | Path                                | Description                                                                          |
+|----------|-------------------------------------|------------------------------------------------------------------------------------|
+| `POST`   | `/api/files`                        | Multipart field `file` + optional `refType`, `refId`, `role`, `visibility`, `sortOrder`. Returns `FileDto` |
+| `GET`    | `/api/files?refType=&refId=&role=`  | List files for an entity — `{ data: FileDto[], total }`                              |
+| `GET`    | `/api/files/:id`                    | 302-redirect to the CDN URL (public files) or proxy-stream with `ETag` / `Range` support |
+| `GET`    | `/api/files/:id/meta`               | The `FileDto` as JSON                                                               |
+| `DELETE` | `/api/files/:id`                    | Remove the bytes and the row                                                        |
+
+**`FileDto`:** `id`, `storageKey`, `originalName`, `mimeType`, `size`, `checksum`, `visibility`
+(`'public' | 'private'`), `ownerId`, `refType`, `refId`, `role`, `sortOrder`, `createdAt`,
+`updatedAt`, and `url` (absolute CDN URL for public files, otherwise the relative `/api/files/:id`).
+
+**Linking files to an entity — `attachFiles`:**
+
+In a plugin's read route, batch-load a model's files (one query, no N+1) and attach them:
+
+```typescript
+import { attachFiles } from '@eleansphere/be-core';
+
+const myPlugin: ProjectPlugin = {
+  registerRoutes(app, _sequelize, models, _email, storage) {
+    app.get('/api/products/:id', async (req, res, next) => {
+      try {
+        const product = await models['Product'].findByPk(req.params.id);
+        if (!product) return next(new HttpError(404, 'Product not found'));
+        const [withImages] = await attachFiles(models['File'], storage!, 'Product', [product], {
+          role: 'image',
+          as: 'images',
+        });
+        res.json(withImages); // { ...product, images: FileDto[] }
+      } catch (err) {
+        next(err);
+      }
+    });
+  },
+};
+```
+
+Uploads for that product go straight to the file service:
+`POST /api/files` with form fields `file`, `refType=Product`, `refId=<product id>`, `role=image`.
 
 ---
 

@@ -9,6 +9,10 @@ import { initModelsFromConfigs, mountModelRoutes } from '../utils/init-models-fr
 import { defaultErrorHandler } from './error-handler';
 import { EmailConfig, EmailService } from '../email/email-types';
 import { createEmailService } from '../email/create-email-service';
+import { StorageAdapter } from '../files/storage/storage-adapter';
+import { StorageConfig, createStorageAdapter } from '../files/storage/create-storage-adapter';
+import { FILE_MODEL_NAME, fileEntityConfig } from '../files/file-entity';
+import { createFileServiceRouter } from '../files/create-file-service-router';
 
 export interface AppConfig {
   databaseUrl: string;
@@ -23,6 +27,12 @@ export interface AppConfig {
   /** Global middleware registered before all routes (including auto-generated ones) */
   middleware?: RequestHandler[];
   email?: EmailConfig;
+  /**
+   * Detached file service. When set, be-core registers a `File` model and mounts the file
+   * service router (default `/api/files`) backed by an S3-compatible bucket. The storage
+   * adapter is passed to plugin `registerRoutes` as its 5th argument.
+   */
+  storage?: StorageConfig;
   auth?: {
     modelName: string; // name of the user model (e.g. 'user')
     expiresIn?: string;
@@ -43,10 +53,16 @@ export function createApp(config: AppConfig): Express {
     ? createEmailService(config.email)
     : undefined;
 
-  // 1. Init models from configs (generic)
-  const configModels = config.modelConfigs
-    ? initModelsFromConfigs(config.modelConfigs, sequelize)
-    : {};
+  const storageAdapter: StorageAdapter | undefined = config.storage
+    ? createStorageAdapter(config.storage)
+    : undefined;
+
+  // 1. Init models from configs (generic). The file service adds its own `File` model.
+  const modelConfigs = [
+    ...(config.modelConfigs ?? []),
+    ...(config.storage ? [fileEntityConfig] : []),
+  ];
+  const configModels = modelConfigs.length ? initModelsFromConfigs(modelConfigs, sequelize) : {};
 
   // 2. Register models from plugins (custom)
   for (const plugin of config.plugins ?? []) {
@@ -78,6 +94,18 @@ export function createApp(config: AppConfig): Express {
     mountModelRoutes(config.modelConfigs, configModels, app, config.jwtSecret);
   }
 
+  // 4.5 Mount the detached file service
+  if (config.storage && storageAdapter) {
+    app.use(
+      config.storage.routePath ?? '/api/files',
+      createFileServiceRouter(configModels[FILE_MODEL_NAME], storageAdapter, {
+        writeMiddleware: config.storage.writeMiddleware,
+        preferRedirect: config.storage.preferRedirect,
+        maxFileSize: config.storage.maxFileSize,
+      })
+    );
+  }
+
   // 5. Mount auth routes
   if (config.auth) {
     const userModel = sequelize.models[config.auth.modelName];
@@ -99,7 +127,7 @@ export function createApp(config: AppConfig): Express {
 
   // 6. Register custom routes from plugins
   for (const plugin of config.plugins ?? []) {
-    plugin.registerRoutes(app, sequelize, allModels, emailService);
+    plugin.registerRoutes(app, sequelize, allModels, emailService, storageAdapter);
   }
 
   // 7. Register error handler last — catches errors from all routes and plugins

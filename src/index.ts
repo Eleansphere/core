@@ -26,10 +26,33 @@ export { createAuthRouter } from './auth/create-auth-router';
 export type { AuthConfig } from './auth/create-auth-router';
 export { createVerifyToken, createExtractUser } from './auth/create-verify-token';
 
-// Files
+// Files — legacy BLOB-in-DB router
 export { createFileRouter } from './files/create-file-router';
 export type { FileFieldConfig } from './files/create-file-router';
 
+// Files — detached file service (bytes in S3-compatible storage, metadata in Postgres)
+export { createFileServiceRouter } from './files/create-file-service-router';
+export type { FileServiceRouterOptions } from './files/create-file-service-router';
+export { fileEntityConfig, toFileDto, FILE_MODEL_NAME, FILE_ID_PREFIX } from './files/file-entity';
+export type { FileRecord, FileDto } from './files/file-entity';
+export { attachFiles } from './files/attach-files';
+export type { AttachFilesOptions } from './files/attach-files';
+export { createStorageAdapter } from './files/storage/create-storage-adapter';
+export type { StorageConfig } from './files/storage/create-storage-adapter';
+export { S3StorageAdapter } from './files/storage/s3-storage-adapter';
+export type { S3StorageConfig } from './files/storage/s3-storage-adapter';
+export type {
+  StorageAdapter,
+  StoragePutOptions,
+  StorageByteRange,
+  FileVisibility,
+} from './files/storage/storage-adapter';
+
 // Email
 export { createEmailService } from './email/create-email-service';
-export type { EmailConfig, EmailService, SendEmailOptions, EmailTemplateFunction } from './email/email-types';
+export type {
+  EmailConfig,
+  EmailService,
+  SendEmailOptions,
+  EmailTemplateFunction,
+} from './email/email-types';
