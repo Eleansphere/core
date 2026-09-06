@@ -1,6 +1,6 @@
 {
   "name": "@eleansphere/entity-core",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Define an entity once (fields + validation) and derive its be-core ModelConfig, DTO classes, and service-core service class from it",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
