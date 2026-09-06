@@ -12,12 +12,38 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
     console.log(`[${model.name}] ${action}`, payload ?? '');
   }
 
+  // The authenticated user's id, for userScoped models. `middleware` already rejects requests
+  // without a valid token when userScoped, so a missing id here is a misconfiguration, not an
+  // anonymous caller — surface it as 401 rather than silently querying with `ownerId: undefined`.
+  function requireOwnerId(req: Request): string {
+    const id = (req as any).user?.id;
+    if (!id) throw new HttpError(401, 'Authentication required');
+    return id;
+  }
+
+  // Loads a record by id and, for userScoped models, verifies the caller owns it. "Not yours" is
+  // reported as 404, not 403 — a userScoped collection must not leak which ids exist.
+  async function findOwnedOrThrow(req: Request, id: string): Promise<T> {
+    const entity = await model.findByPk(id);
+    if (!entity) throw new HttpError(404, `${model.name} not found`);
+    if (userScoped && (entity as any).ownerId !== requireOwnerId(req)) {
+      throw new HttpError(404, `${model.name} not found`);
+    }
+    return entity;
+  }
+
   // CREATE
   router.post('/', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       let data = { ...req.body };
       if (generateId && prefix) {
         data.id = generateId(prefix);
+      }
+
+      // Ownership comes from the token, never the request body. Set before the hook so field
+      // validation sees it and a client-supplied `ownerId` can't win.
+      if (userScoped) {
+        data.ownerId = requireOwnerId(req);
       }
 
       if (hooks?.beforeCreate) {
@@ -39,7 +65,9 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
   router.get('/', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       logAction('READ all request');
-      const where = userScoped ? { ownerId: (req as any).user?.id } : undefined;
+      // Loosely typed: `model` is the generic `Model`, so Sequelize's attribute-keyed
+      // `WhereOptions` can't see `ownerId`.
+      const where: any = userScoped ? { ownerId: requireOwnerId(req) } : undefined;
       const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
 
@@ -61,11 +89,7 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
   router.get('/:id', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       logAction('READ by ID request', req.params.id);
-      const entity = await model.findByPk(req.params.id);
-      if (!entity) {
-        logAction('READ by ID not found', req.params.id);
-        return next(new HttpError(404, `${model.name} not found`));
-      }
+      const entity = await findOwnedOrThrow(req, req.params.id);
       res.json(entity);
     } catch (err) {
       logAction('READ by ID error', err);
@@ -77,12 +101,14 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
   router.put('/:id', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       logAction('UPDATE request', { id: req.params.id, body: req.body });
-      const entity = await model.findByPk(req.params.id);
-      if (!entity) {
-        logAction('UPDATE not found', req.params.id);
-        return next(new HttpError(404, `${model.name} not found`));
-      }
+      const entity = await findOwnedOrThrow(req, req.params.id);
       let data = { ...req.body };
+
+      // `ownerId` is assigned once, at creation. Pin it to the current owner so an update can't
+      // reassign the record to another user (and so it stays present for field validation).
+      if (userScoped) {
+        data.ownerId = (entity as any).ownerId;
+      }
 
       if (hooks?.beforeUpdate) {
         data = await hooks.beforeUpdate(data, req);
@@ -100,11 +126,7 @@ export function createCrudRouter<T extends Model>(options: GenericCrudOptions<T>
   router.delete('/:id', ...middleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       logAction('DELETE request', req.params.id);
-      const entity = await model.findByPk(req.params.id);
-      if (!entity) {
-        logAction('DELETE not found', req.params.id);
-        return next(new HttpError(404, `${model.name} not found`));
-      }
+      const entity = await findOwnedOrThrow(req, req.params.id);
       await entity.destroy();
       res.status(204).send();
       logAction('DELETE success', req.params.id);

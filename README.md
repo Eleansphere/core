@@ -130,12 +130,15 @@ const productConfig: ModelConfig = {
 
 **User-scoped models:**
 
-Setting `userScoped: true` on a `ModelConfig` does two things:
+Setting `userScoped: true` on a `ModelConfig` scopes every auto-generated route to the authenticated user:
 
 1. All routes for that model require a valid JWT (`Authorization: Bearer <token>`).
-2. `GET /` filters results to only records where `ownerId` matches the authenticated user's ID.
+2. `POST /` sets `ownerId` from the token — any `ownerId` in the request body is ignored.
+3. `GET /` returns only records whose `ownerId` matches the caller.
+4. `GET /:id`, `PUT /:id`, `DELETE /:id` return `404` unless the caller owns the record — so ids from other users can't be read, modified, or deleted, and their existence isn't leaked.
+5. `PUT /:id` can't reassign `ownerId` to another user (it's pinned to the current owner).
 
-This means each user only sees and can interact with their own data. The model must have an `ownerId` field for this to work correctly.
+The model must have an `ownerId` field. The client never needs to send `ownerId` — the server owns it — but sending it is harmless (it's overwritten).
 
 ```typescript
 const noteConfig: ModelConfig = {
