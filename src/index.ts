@@ -4,3 +4,9 @@ export type { FieldDef, Fields, InferDto, InferCreateDto, InferUpdateDto, DtoCla
 // instead of scattering `'STRING' as const` literals.
 export type { FieldType } from '@eleansphere/be-core';
 export { AbstractUserScopedCrudService } from './services/abstract-user-scoped-crud.service';
+
+// ── Wiring helpers ────────────────────────────────────────────────────────────
+export { createServiceContainer } from './service-container';
+export type { ServiceRegistry, ServiceContainer } from './service-container';
+export { toModelConfigs } from './model-configs';
+export type { ToModelConfigsOptions } from './model-configs';

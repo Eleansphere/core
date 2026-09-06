@@ -110,6 +110,46 @@ export const loanEntity = defineEntity({
 });
 ```
 
+## Wiring helpers
+
+Keep the entity list in one registry and derive both sides from it.
+
+### `createServiceContainer` — frontend
+
+```typescript
+import { createServiceContainer } from '@eleansphere/entity-core';
+import { AuthService } from '@eleansphere/service-core';
+
+export const services = createServiceContainer(
+  { auth: AuthService, books: bookEntity, loans: loanEntity },
+  import.meta.env.VITE_BACKEND_URL,
+  () => localStorage.getItem('token'),
+);
+
+services.books.getAll();
+```
+
+Each registry value is either a service class (instantiated as `new Class(baseUrl, tokenProvider)`)
+or an entity object (its `.Service` is instantiated). Replaces hand-written
+`AbstractServiceContainer` subclasses where every `this.x = new X(...this.args())` line was a place
+to forget an entity.
+
+### `toModelConfigs` — backend
+
+```typescript
+import { createApp } from '@eleansphere/be-core';
+import { toModelConfigs } from '@eleansphere/entity-core';
+import { allEntities } from '@my-project/service';
+
+createApp({
+  modelConfigs: toModelConfigs(allEntities, { custom: ['Product', 'Order'] }),
+  // ...
+});
+```
+
+`custom` names are registered with `skipAutoRoutes: true` (a plugin serves those paths). Accepts a
+record or an array of entity objects.
+
 ## Development
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the build/changeset/`npm link` workflow.
