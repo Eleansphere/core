@@ -59,9 +59,12 @@ bookEntity.Service   // service-core-based service class — instantiate in your
 | `fields`      | `Fields`             | Field definitions — see below                                         |
 | `extend`      | `(Base) => Base`     | Add custom methods to the generated service class                     |
 
-**Field types:** `STRING`, `TEXT`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `BLOB` — matches be-core's `FieldConfig`.
-Any other be-core field validation (`unique`, `minLength`, `maxLength`, `min`, `max`, `format: 'email' | 'url'`)
-passes straight through.
+**Field types:** `STRING`, `TEXT`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `BLOB`. `FieldDef` is built on
+be-core's own `FieldType` and `FieldValidation` (be-core is a dependency of this package), so every be-core
+field validation — `unique`, `minLength`, `maxLength`, `min`, `max`, `format: 'email' | 'url'` — is
+**type-checked here**, not waved through an untyped index signature. A typo in a validation key, or a value of
+the wrong type, is a compile error. If be-core adds a field type, a compile-time guard in `entity-factory.ts`
+forces `FieldTypeMap` to be updated before the new type can be used.
 
 ### `writeOnly` — the one flag that used to be two
 

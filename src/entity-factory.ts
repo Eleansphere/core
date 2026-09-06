@@ -1,12 +1,17 @@
-import type { ModelConfig, FieldConfig } from '@eleansphere/be-core';
+import type { ModelConfig, FieldConfig, FieldType, FieldValidation } from '@eleansphere/be-core';
 import { AbstractCrudService, AbstractFileService } from '@eleansphere/service-core';
 import { AbstractUserScopedCrudService } from './services/abstract-user-scoped-crud.service';
 
 // ── Field definitions ─────────────────────────────────────────────────────────
 
-type FieldType = 'STRING' | 'TEXT' | 'INTEGER' | 'FLOAT' | 'BOOLEAN' | 'DATE' | 'BLOB';
-
-export type FieldDef = {
+/**
+ * A single field's definition. Built directly on be-core's `FieldValidation` and `FieldType`, so
+ * the two can't drift: every validation be-core understands (`unique`, `minLength`, `maxLength`,
+ * `min`, `max`, `format`) is accepted here and type-checked — instead of being waved through an
+ * untyped `[key: string]: unknown` index signature like before. be-core owns the vocabulary;
+ * entity-core depends on it (type-only import — no runtime/bundle cost).
+ */
+export type FieldDef = Omit<FieldValidation, 'required'> & {
   type: FieldType;
   /** Use `required: true` (literal). Prevents TypeScript from widening to `boolean`. */
   required?: true;
@@ -20,7 +25,6 @@ export type FieldDef = {
    */
   writeOnly?: true;
   default?: unknown;
-  [key: string]: unknown;
 };
 
 export type Fields = Record<string, FieldDef>;
@@ -36,6 +40,15 @@ type FieldTypeMap = {
   DATE: string;
   BLOB: Blob;
 };
+
+// Compile-time guard: if be-core's `FieldType` gains a member that `FieldTypeMap` doesn't cover,
+// this assignment stops compiling — so the inference below fails loudly at build time instead of
+// silently degrading a real field to `unknown`. Exported (but not re-exported from index) so it
+// can't trip `noUnusedLocals`; it is not part of the public API.
+type UnmappedFieldTypes = Exclude<FieldType, keyof FieldTypeMap>;
+export const __fieldTypeMapIsExhaustive: [UnmappedFieldTypes] extends [never]
+  ? true
+  : UnmappedFieldTypes = true;
 
 type MapType<F extends FieldDef> = FieldTypeMap[F['type']];
 
