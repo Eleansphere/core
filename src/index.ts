@@ -1,5 +1,14 @@
 export { defineEntity } from './entity-factory';
-export type { FieldDef, Fields, InferDto, InferCreateDto, InferUpdateDto, DtoClass } from './entity-factory';
+export type {
+  FieldDef,
+  Fields,
+  InferDto,
+  InferCreateDto,
+  InferUpdateDto,
+  DtoClass,
+  EntityResult,
+  CrudServiceInstance,
+} from './entity-factory';
 // Re-exported from be-core so entity definitions can reference the field-type union directly
 // instead of scattering `'STRING' as const` literals.
 export type { FieldType } from '@eleansphere/be-core';

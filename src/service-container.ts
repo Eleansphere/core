@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-type ServiceConstructor = new (baseUrl: string, tokenProvider: () => string | null) => unknown;
+type ServiceConstructor = abstract new (baseUrl: string, tokenProvider: () => string | null) => unknown;
 
 /** A registry entry is either an entity object (its `.Service` is used) or a service class. */
 type RegistryEntry = { Service: ServiceConstructor } | ServiceConstructor;
@@ -8,16 +8,16 @@ export type ServiceRegistry = Record<string, RegistryEntry>;
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
-// Resolves a registry entry to its service *instance* type. `defineEntity` currently types
-// `.Service` as `any`, so entity entries resolve to `any` (no worse than
-// `InstanceType<typeof entity.Service>`); a service class passed directly resolves precisely.
+// Resolves a registry entry to its service *instance* type. A directly-passed service class, and
+// a normal entity's `.Service`, resolve precisely; a `serviceType: 'file'` entity's `.Service` is
+// `AnyConstructor` and resolves to `any` (unchanged legacy behaviour).
 type InstanceOfEntry<E> = E extends { Service: infer S }
   ? IsAny<S> extends true
     ? any
-    : S extends new (...args: any[]) => infer I
+    : S extends abstract new (...args: any[]) => infer I
       ? I
       : unknown
-  : E extends new (...args: any[]) => infer I
+  : E extends abstract new (...args: any[]) => infer I
     ? I
     : never;
 
@@ -49,7 +49,10 @@ export function createServiceContainer<R extends ServiceRegistry>(
 ): ServiceContainer<R> {
   const container: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(registry)) {
-    const Service: ServiceConstructor = typeof entry === 'function' ? entry : entry.Service;
+    const entryCtor = typeof entry === 'function' ? entry : entry.Service;
+    // Every real service class is concrete; `ServiceConstructor` is declared `abstract new` only
+    // so `AnyConstructor`-typed `.Service` (file entities) fits the registry.
+    const Service = entryCtor as new (baseUrl: string, tokenProvider: () => string | null) => unknown;
     container[key] = new Service(baseUrl, tokenProvider);
   }
   return container as ServiceContainer<R>;

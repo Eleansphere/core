@@ -1,5 +1,6 @@
 import type { ModelConfig, FieldConfig, FieldType, FieldValidation } from '@eleansphere/be-core';
 import { AbstractCrudService, AbstractFileService } from '@eleansphere/service-core';
+import type { PaginationParams, PaginatedResponse } from '@eleansphere/service-core';
 import { AbstractUserScopedCrudService } from './services/abstract-user-scoped-crud.service';
 
 // ── Field definitions ─────────────────────────────────────────────────────────
@@ -118,7 +119,23 @@ function toModelConfigFields(fields: Fields): Record<string, FieldConfig> {
 
 type AnyConstructor = abstract new (...args: any[]) => any;
 
-type EntityOptions<TFields extends Fields> = {
+/** A service constructor as instantiated by `createServiceContainer` / a project container. */
+type ServiceCtor<TInstance> = new (baseUrl: string, tokenProvider: () => string | null) => TInstance;
+
+/**
+ * The public CRUD surface of a generated service — what `InstanceType<typeof entity.Service>` is
+ * for a normal entity. Declared structurally (not as `AbstractCrudService<…>` directly) so it
+ * stays non-abstract and `new`-able.
+ */
+export type CrudServiceInstance<TFields extends Fields> = {
+  getAll(params?: PaginationParams): Promise<PaginatedResponse<InferDto<TFields>>>;
+  getById(id: string): Promise<InferDto<TFields>>;
+  create(data: InferCreateDto<TFields>): Promise<InferDto<TFields>>;
+  update(id: string, data: InferUpdateDto<TFields>): Promise<InferDto<TFields>>;
+  delete(id: string): Promise<void>;
+};
+
+type EntityOptions<TFields extends Fields, TServiceCtor extends AnyConstructor> = {
   name: string;
   prefix: string;
   /** HTTP base path used by the service. Defaults to /api/{name}s */
@@ -129,23 +146,51 @@ type EntityOptions<TFields extends Fields> = {
   serviceType?: 'crud' | 'file';
   uploadField?: string;
   fields: TFields;
-  /** Extend the generated service class with custom methods */
-  extend?: (Base: AnyConstructor) => AnyConstructor;
+  /**
+   * Extend the generated service class with custom methods. `Base` is the runtime service class
+   * (an `AbstractCrudService` subclass); use `class extends (Base as any)` + `(this as any)` for
+   * the HTTP helpers. The returned constructor's instance type becomes
+   * `InstanceType<typeof entity.Service>`.
+   */
+  extend?: (Base: AnyConstructor) => TServiceCtor;
 };
 
-export type EntityResult<TFields extends Fields> = {
+export type EntityResult<
+  TFields extends Fields,
+  TServiceCtor extends AnyConstructor = ServiceCtor<CrudServiceInstance<TFields>>,
+> = {
   config: ModelConfig;
   Dto: DtoClass<InferDto<TFields>>;
   CreateDto: DtoClass<InferCreateDto<TFields>>;
   UpdateDto: DtoClass<InferUpdateDto<TFields>>;
-  // Service is typed as `any` — callers cast via InstanceType<typeof entity.Service>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  Service: any;
+  /**
+   * The generated service class. `InstanceType<typeof entity.Service>` is the CRUD surface
+   * (`getAll` / `getById` / `create` / `update` / `delete`) plus whatever `extend` added.
+   * `serviceType: 'file'` entities keep a loose `Service` type (legacy path).
+   */
+  Service: TServiceCtor;
 };
 
+// Overload 1 — `serviceType: 'file'` (legacy blob-upload path): `Service` stays loose (`any`).
 export function defineEntity<TFields extends Fields>(
-  options: EntityOptions<TFields>
-): EntityResult<TFields> {
+  options: EntityOptions<TFields, ServiceCtor<any>> & { serviceType: 'file' }
+): EntityResult<TFields, ServiceCtor<any>>;
+
+// Overload 2 — normal CRUD entity (default). `TServiceCtor` is inferred from `extend`'s return,
+// otherwise the plain CRUD service constructor. Entities that use `extend` should be instantiated
+// via `createServiceContainer`, not `new entity.Service(...)` directly (the `(Base as any)` in the
+// extend body erases the constructor signature).
+export function defineEntity<
+  TFields extends Fields,
+  TServiceCtor extends AnyConstructor = ServiceCtor<CrudServiceInstance<TFields>>,
+>(
+  options: EntityOptions<TFields, TServiceCtor>
+): EntityResult<TFields, TServiceCtor>;
+
+export function defineEntity<TFields extends Fields>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  options: EntityOptions<TFields, any>
+): EntityResult<TFields, AnyConstructor> {
   const { name, prefix, basePath, routePath, userScoped, serviceType, uploadField, fields, extend } =
     options;
 
@@ -200,7 +245,11 @@ export function defineEntity<TFields extends Fields>(
     } as unknown as AnyConstructor;
   }
 
-  const Service = extend ? extend(ServiceBase) : ServiceBase;
+  // `extend` is typed to receive a real `ServiceCtor`; at runtime `ServiceBase` is exactly that,
+  // but the three branches above are cast to `AnyConstructor`, so re-cast here.
+  const Service = extend
+    ? (extend as (base: AnyConstructor) => AnyConstructor)(ServiceBase)
+    : ServiceBase;
 
-  return { config, Dto, CreateDto, UpdateDto, Service };
+  return { config, Dto, CreateDto, UpdateDto, Service } as EntityResult<TFields, AnyConstructor>;
 }

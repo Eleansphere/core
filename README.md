@@ -42,8 +42,13 @@ This gives you three things from one definition:
 ```typescript
 bookEntity.config   // ModelConfig — pass to be-core's createApp({ modelConfigs: [...] })
 bookEntity.Dto      // read DTO class — new bookEntity.Dto(data)
-bookEntity.Service   // service-core-based service class — instantiate in your ServiceContainer
+bookEntity.Service   // service class — register it in createServiceContainer({ books: bookEntity, ... })
 ```
+
+For a plain entity, `InstanceType<typeof bookEntity.Service>` is the CRUD surface — `getAll` returns
+`Promise<PaginatedResponse<InferDto<…>>>`, plus `getById` / `create` / `update` / `delete`. Entities that
+use `extend`, or `serviceType: 'file'`, keep `.Service` loose (`any`) for now, and must be instantiated
+through `createServiceContainer` rather than `new entity.Service(...)`.
 
 ### Options
 
