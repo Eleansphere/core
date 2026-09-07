@@ -1,11 +1,15 @@
 # @eleansphere/entity-core
 
-Define an entity **once** and derive its [be-core](https://github.com/Eleansphere/be-core) model config, its DTO
-classes, and its [service-core](https://github.com/Eleansphere/service-core) service class from that single
-definition — so the backend model, the DTOs, and the frontend service can never drift apart.
+The client-side toolkit for [be-core](https://github.com/Eleansphere/be-core) apps.
 
-Extracted from `kniho-hlod-service`'s `defineEntity`, which wasn't actually kniho-hlod-specific — this is the same
-code, generalized so other projects (Klotilda, and whatever comes next) don't have to reinvent it.
+Define an entity **once** and derive its be-core model config, its DTO classes, and its HTTP
+service from that single definition — so the backend model, the DTOs, and the frontend service can
+never drift apart. Plus the HTTP layer those services are built on (`ApiClient`, the abstract
+service classes, `AuthService`) and the wiring helpers (`createServiceContainer`, `toModelConfigs`).
+
+> **2.0.0** merged in `@eleansphere/service-core` — everything it exported now comes from here, and
+> `extend` is fully typed. `@eleansphere/service-core@2.0.0` is a re-export shim; repoint its
+> imports here and drop the extra dependency.
 
 ## Installation
 
@@ -94,11 +98,13 @@ back.
 
 ### `userScoped` entities
 
-Same as be-core: all routes require a JWT, and `GET /` on the backend filters to the authenticated user's own
-records (matched on `ownerId`, which the entity must define). On the frontend, the generated service class extends
-`AbstractUserScopedCrudService` instead of the plain `AbstractCrudService`.
+All routes require a JWT, and be-core stamps `ownerId` from the token on create and enforces it on
+`GET`/`PUT`/`DELETE /:id`. The entity must define an `ownerId` field. Purely a backend concern —
+the generated client service is a plain CRUD service.
 
 ### Extending the generated service
+
+`Base` is a real, `new`-able class; `this` has the CRUD methods and the HTTP helpers, all typed:
 
 ```typescript
 export const loanEntity = defineEntity({
@@ -107,13 +113,17 @@ export const loanEntity = defineEntity({
   userScoped: true,
   fields: { /* ... */ },
   extend: (Base) =>
-    class extends (Base as any) {
+    class extends Base {
       getByBook(bookId: string) {
-        return this.get(`/api/loans?bookId=${bookId}`);
+        return this.get<LoanDto[]>(`${this.basePath}?bookId=${bookId}`);
       }
     },
 });
 ```
+
+`loanEntity.Service`'s instance type is now `CrudServiceInstance & { getByBook(...) }`, so
+`getServices().loans.getByBook(...)` **and** `.getAll()` are both typed. The older
+`class extends (Base as any)` + `(this as any)` still compiles.
 
 ## Wiring helpers
 
@@ -122,8 +132,7 @@ Keep the entity list in one registry and derive both sides from it.
 ### `createServiceContainer` — frontend
 
 ```typescript
-import { createServiceContainer } from '@eleansphere/entity-core';
-import { AuthService } from '@eleansphere/service-core';
+import { createServiceContainer, AuthService } from '@eleansphere/entity-core';
 
 export const services = createServiceContainer(
   { auth: AuthService, books: bookEntity, loans: loanEntity },

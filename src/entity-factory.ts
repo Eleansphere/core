@@ -1,7 +1,8 @@
 import type { ModelConfig, FieldConfig, FieldType, FieldValidation } from '@eleansphere/be-core';
-import { AbstractCrudService, AbstractFileService } from '@eleansphere/service-core';
-import type { PaginationParams, PaginatedResponse } from '@eleansphere/service-core';
-import { AbstractUserScopedCrudService } from './services/abstract-user-scoped-crud.service';
+import type { ApiClient } from './api-client';
+import { AbstractCrudService } from './services/abstract-crud.service';
+import { AbstractFileService } from './services/abstract-file.service';
+import type { PaginationParams, PaginatedResponse } from './services/abstract-crud.service';
 
 // ── Field definitions ─────────────────────────────────────────────────────────
 
@@ -135,6 +136,24 @@ export type CrudServiceInstance<TFields extends Fields> = {
   delete(id: string): Promise<void>;
 };
 
+/** The HTTP helpers an `extend` body reaches for on `this` — the `ApiClient` methods + `basePath`. */
+type ServiceHttpHelpers = Pick<
+  ApiClient,
+  'baseUrl' | 'get' | 'post' | 'put' | 'httpDelete' | 'uploadFile' | 'uploadMultipart'
+> & {
+  readonly basePath: string;
+};
+
+/**
+ * The class `extend` receives. `class extends Base { … }` gives a `new`-able subclass whose `this`
+ * has the CRUD methods and the HTTP helpers (`this.get`, `this.basePath`, …) — all typed, no
+ * `(Base as any)` / `(this as any)`. (The old cast style still compiles.)
+ */
+export type ExtendableService<TFields extends Fields> = new (
+  baseUrl: string,
+  tokenProvider: () => string | null
+) => CrudServiceInstance<TFields> & ServiceHttpHelpers;
+
 type EntityOptions<TFields extends Fields, TServiceCtor extends AnyConstructor> = {
   name: string;
   prefix: string;
@@ -147,12 +166,11 @@ type EntityOptions<TFields extends Fields, TServiceCtor extends AnyConstructor> 
   uploadField?: string;
   fields: TFields;
   /**
-   * Extend the generated service class with custom methods. `Base` is the runtime service class
-   * (an `AbstractCrudService` subclass); use `class extends (Base as any)` + `(this as any)` for
-   * the HTTP helpers. The returned constructor's instance type becomes
-   * `InstanceType<typeof entity.Service>`.
+   * Extend the generated service class with custom methods. The returned constructor's instance
+   * type becomes `InstanceType<typeof entity.Service>` — so add `getByFoo` and it shows up on
+   * `getServices().entity`, alongside the inherited CRUD.
    */
-  extend?: (Base: AnyConstructor) => TServiceCtor;
+  extend?: (Base: ExtendableService<TFields>) => TServiceCtor;
 };
 
 export type EntityResult<
@@ -177,9 +195,9 @@ export function defineEntity<TFields extends Fields>(
 ): EntityResult<TFields, ServiceCtor<any>>;
 
 // Overload 2 — normal CRUD entity (default). `TServiceCtor` is inferred from `extend`'s return,
-// otherwise the plain CRUD service constructor. Entities that use `extend` should be instantiated
-// via `createServiceContainer`, not `new entity.Service(...)` directly (the `(Base as any)` in the
-// extend body erases the constructor signature).
+// otherwise the plain CRUD service constructor. `extend` bodies written as `class extends Base`
+// are `new`-able directly; the legacy `class extends (Base as any)` erases the constructor
+// signature, so those must go through `createServiceContainer`.
 export function defineEntity<
   TFields extends Fields,
   TServiceCtor extends AnyConstructor = ServiceCtor<CrudServiceInstance<TFields>>,
@@ -215,38 +233,30 @@ export function defineEntity<TFields extends Fields>(
   const UpdateDto = makeDtoClass<InferUpdateDto<TFields>>();
 
   // ── Service class ───────────────────────────────────────────────────────────
+  // `userScoped` is a backend concern (be-core stamps/enforces `ownerId`); the client service is
+  // a plain CRUD service either way.
+  const servicePath = path;
   let ServiceBase: AnyConstructor;
 
   if (serviceType === 'file') {
-    const filePath = path;
     const fileField = uploadField ?? 'file';
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ServiceBase = class extends (AbstractFileService as any) {
-      protected readonly basePath = filePath;
+      protected readonly basePath = servicePath;
       protected readonly uploadField = fileField;
     } as AnyConstructor;
-  } else if (userScoped) {
-    const crudPath = path;
-    ServiceBase = class extends AbstractUserScopedCrudService<
-      InferDto<TFields>,
-      InferCreateDto<TFields>,
-      InferUpdateDto<TFields>
-    > {
-      protected readonly basePath = crudPath;
-    } as unknown as AnyConstructor;
   } else {
-    const crudPath = path;
     ServiceBase = class extends AbstractCrudService<
       InferDto<TFields>,
       InferCreateDto<TFields>,
       InferUpdateDto<TFields>
     > {
-      protected readonly basePath = crudPath;
+      protected readonly basePath = servicePath;
     } as unknown as AnyConstructor;
   }
 
-  // `extend` is typed to receive a real `ServiceCtor`; at runtime `ServiceBase` is exactly that,
-  // but the three branches above are cast to `AnyConstructor`, so re-cast here.
+  // `extend`'s `Base` is typed as `ExtendableService`; `ServiceBase` is that class at runtime but
+  // typed `AnyConstructor` above, so cast at the call.
   const Service = extend
     ? (extend as (base: AnyConstructor) => AnyConstructor)(ServiceBase)
     : ServiceBase;
