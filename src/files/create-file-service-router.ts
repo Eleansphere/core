@@ -69,53 +69,66 @@ export function createFileServiceRouter(
   const router = Router();
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: maxFileSize } });
 
+  // Every route below is `try { <body> } catch (err) { next(err) }` — wrapping that once here
+  // means each route only states what makes it different (see create-crud-router.ts's `handle`).
+  function handle(
+    // Return type is `unknown`, not `void` — some bodies `return res.redirect(...)` /
+    // `res.pipe(...)` etc. as a terse "and stop here", which don't return `void`.
+    body: (req: Request, res: Response, next: NextFunction) => Promise<unknown>
+  ): (req: Request, res: Response, next: NextFunction) => Promise<void> {
+    return async (req, res, next) => {
+      try {
+        await body(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    };
+  }
+
   router.post(
     '/',
     ...writeMiddleware,
     upload.single('file'),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        if (!req.file) {
-          return next(new HttpError(400, 'No file uploaded (expected multipart field "file")'));
-        }
-
-        const body = req.body as Record<string, string | undefined>;
-        const id = generateId(FILE_ID_PREFIX);
-        const visibility = normalizeVisibility(body.visibility);
-        const prefix = body.refType ? sanitizeSegment(body.refType) : 'misc';
-        const storageKey = `${prefix}/${id}${fileExtension(req.file.originalname, req.file.mimetype)}`;
-        const checksum = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
-
-        await storage.put(storageKey, req.file.buffer, {
-          contentType: req.file.mimetype,
-          contentLength: req.file.size,
-          visibility,
-        });
-
-        const record = await FileModel.create({
-          id,
-          storageKey,
-          originalName: req.file.originalname || null,
-          mimeType: req.file.mimetype,
-          size: req.file.size,
-          checksum,
-          visibility,
-          ownerId: (req as { user?: { id?: string } }).user?.id ?? null,
-          refType: body.refType ?? null,
-          refId: body.refId ?? null,
-          role: body.role ?? null,
-          sortOrder: body.sortOrder ? Number.parseInt(body.sortOrder, 10) || 0 : 0,
-        });
-
-        res.status(201).json(toFileDto(record, storage));
-      } catch (err) {
-        next(err);
+    handle(async (req, res, next) => {
+      if (!req.file) {
+        return next(new HttpError(400, 'No file uploaded (expected multipart field "file")'));
       }
-    }
+
+      const body = req.body as Record<string, string | undefined>;
+      const id = generateId(FILE_ID_PREFIX);
+      const visibility = normalizeVisibility(body.visibility);
+      const prefix = body.refType ? sanitizeSegment(body.refType) : 'misc';
+      const storageKey = `${prefix}/${id}${fileExtension(req.file.originalname, req.file.mimetype)}`;
+      const checksum = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+
+      await storage.put(storageKey, req.file.buffer, {
+        contentType: req.file.mimetype,
+        contentLength: req.file.size,
+        visibility,
+      });
+
+      const record = await FileModel.create({
+        id,
+        storageKey,
+        originalName: req.file.originalname || null,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        checksum,
+        visibility,
+        ownerId: (req as { user?: { id?: string } }).user?.id ?? null,
+        refType: body.refType ?? null,
+        refId: body.refId ?? null,
+        role: body.role ?? null,
+        sortOrder: body.sortOrder ? Number.parseInt(body.sortOrder, 10) || 0 : 0,
+      });
+
+      res.status(201).json(toFileDto(record, storage));
+    })
   );
 
-  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
-    try {
+  router.get(
+    '/',
+    handle(async (req, res) => {
       const where: Record<string, unknown> = {};
       for (const key of ['refType', 'refId', 'role', 'ownerId'] as const) {
         const value = req.query[key];
@@ -129,23 +142,21 @@ export function createFileServiceRouter(
         ],
       });
       res.json({ data: rows.map((row) => toFileDto(row, storage)), total: rows.length });
-    } catch (err) {
-      next(err);
-    }
-  });
+    })
+  );
 
-  router.get('/:id/meta', async (req: Request, res: Response, next: NextFunction) => {
-    try {
+  router.get(
+    '/:id/meta',
+    handle(async (req, res, next) => {
       const record = await FileModel.findByPk(req.params.id);
       if (!record) return next(new HttpError(404, 'File not found'));
       res.json(toFileDto(record, storage));
-    } catch (err) {
-      next(err);
-    }
-  });
+    })
+  );
 
-  router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
-    try {
+  router.get(
+    '/:id',
+    handle(async (req, res, next) => {
       const record = (await FileModel.findByPk(req.params.id)) as (FileRecord & object) | null;
       if (!record) return next(new HttpError(404, 'File not found'));
 
@@ -194,25 +205,19 @@ export function createFileServiceRouter(
       const stream = await storage.getStream(record.storageKey);
       stream.on('error', next);
       stream.pipe(res);
-    } catch (err) {
-      next(err);
-    }
-  });
+    })
+  );
 
   router.delete(
     '/:id',
     ...writeMiddleware,
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const record = await FileModel.findByPk(req.params.id);
-        if (!record) return next(new HttpError(404, 'File not found'));
-        await storage.delete((record as unknown as FileRecord).storageKey);
-        await record.destroy();
-        res.status(204).send();
-      } catch (err) {
-        next(err);
-      }
-    }
+    handle(async (req, res, next) => {
+      const record = await FileModel.findByPk(req.params.id);
+      if (!record) return next(new HttpError(404, 'File not found'));
+      await storage.delete((record as unknown as FileRecord).storageKey);
+      await record.destroy();
+      res.status(204).send();
+    })
   );
 
   return router;

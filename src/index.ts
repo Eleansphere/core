@@ -12,9 +12,14 @@ export type { DbConfig } from './db/create-sequelize';
 
 // Types
 export { CoreEntity } from './types/core-entity';
-export type { GenericCrudOptions } from './types/crud-router-types';
-export type { ProjectPlugin } from './types/plugin-types';
+export type { CrudRouterOptions } from './types/crud-router';
+export type { ProjectPlugin } from './types/project-plugin';
 export type { ModelConfig, FieldConfig, FieldType, FieldValidation } from './types/model-config';
+// Side-effect-only for consumers too: this is what makes `req.user` typed on their own Express
+// `Request`, not just be-core's internals — see the file for why the import (not just the type)
+// matters.
+export type { AuthenticatedUser } from './types/express-request';
+import './types/express-request';
 
 // Utils
 export { createCrudRouter } from './utils/create-crud-router';
@@ -23,12 +28,8 @@ export { initModelsFromConfigs, mountModelRoutes } from './utils/init-models-fro
 
 // Auth
 export { createAuthRouter } from './auth/create-auth-router';
-export type { AuthConfig } from './auth/create-auth-router';
+export type { AuthConfig, RegisterConfig, PasswordResetConfig } from './auth/create-auth-router';
 export { createVerifyToken, createExtractUser } from './auth/create-verify-token';
-
-// Files — legacy BLOB-in-DB router
-export { createFileRouter } from './files/create-file-router';
-export type { FileFieldConfig } from './files/create-file-router';
 
 // Files — detached file service (bytes in S3-compatible storage, metadata in Postgres)
 export { createFileServiceRouter } from './files/create-file-service-router';

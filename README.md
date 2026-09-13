@@ -17,7 +17,6 @@ A reusable backend core library for Express.js + Sequelize applications. Elimina
   - [createAuthRouter](#createauthrouter)
   - [createVerifyToken](#createverifytoken)
   - [createExtractUser](#createextractuser)
-  - [createFileRouter](#createfilerouter)
   - [File service (AppConfig.storage)](#file-service-appconfigstorage)
   - [generateId](#generateid)
   - [defaultErrorHandler](#defaulterrorhandler)
@@ -181,6 +180,23 @@ registerRoutes(app, _sequelize, models) {
 | `max`       | `number`  | Maximum numeric value          |
 | `email`     | `boolean` | Validate email format          |
 | `url`       | `boolean` | Validate URL format            |
+| `hash`      | `'bcrypt'`| Hash on create/update (skips values already looking like a bcrypt hash) |
+
+**`activeRange`:**
+
+Mounts a public (no auth) `GET {routePath}/active` route returning records where `from <= now <= to`, ordered by `from` ascending. Mounted even when `skipAutoRoutes` is set — that flag only skips the CRUD routes.
+
+```typescript
+const eventConfig: ModelConfig = {
+  name: 'event',
+  prefix: 'ev',
+  activeRange: { from: 'startsAt', to: 'endsAt' },
+  fields: {
+    startsAt: { type: 'DATE', required: true },
+    endsAt: { type: 'DATE', required: true },
+  },
+};
+```
 
 ### Plugins
 
@@ -254,7 +270,7 @@ const sequelize = createSequelize({
 Generates an Express router with a full set of CRUD endpoints for a given Sequelize model.
 
 ```typescript
-createCrudRouter(options: GenericCrudOptions): Router
+createCrudRouter(options: CrudRouterOptions): Router
 ```
 
 **Generated endpoints:**
@@ -267,18 +283,30 @@ createCrudRouter(options: GenericCrudOptions): Router
 | `PUT`    | `/:id` | Update a record      |
 | `DELETE` | `/:id` | Delete a record      |
 
-**Options (`GenericCrudOptions`):**
+**Options (`CrudRouterOptions`):**
 
 ```typescript
 createCrudRouter({
   model: MyModel,
-  middleware: [verifyToken],          // Optional middleware for protected routes
-  logging: true,                      // Log actions to console
-  beforeCreate: async (data) => {     // Hook before creating a record
-    return { ...data, slug: slugify(data.name) };
+  middleware: [verifyToken],          // Applied to all five routes
+  protect: [verifyToken],             // Applied only to POST/PUT/DELETE — GET stays public
+  log: true,                          // Log actions to console
+  hashFields: ['password'],           // bcrypt-hash these fields on create/update
+  buildWhere: (req) => ({             // Extra `where` filter for GET (list)
+    category: req.query.category,
+  }),
+  order: [['sortOrder', 'ASC']],      // Sort order for GET (list)
+  enrich: (rows) => attachFiles(...), // Transform fetched row(s) before responding
+  beforeDelete: async (entity) => {   // Runs before the record is destroyed
+    await cleanupRelated(entity);
   },
-  beforeUpdate: async (data) => {     // Hook before updating a record
-    return data;
+  hooks: {
+    beforeCreate: async (data) => {     // Hook before creating a record
+      return { ...data, slug: slugify(data.name) };
+    },
+    beforeUpdate: async (data) => {     // Hook before updating a record
+      return data;
+    },
   },
 });
 ```
@@ -295,10 +323,29 @@ createAuthRouter(UserModel: Model, config: AuthConfig): Router
 
 **Endpoints:**
 
-| Method | Path             | Description                                 |
-|--------|------------------|---------------------------------------------|
-| `POST` | `/api/auth/login`| Login with email + password, returns JWT    |
-| `GET`  | `/api/auth/me`   | Get the authenticated user's info (JWT)     |
+| Method | Path                          | Description                                              |
+|--------|-------------------------------|-----------------------------------------------------------|
+| `POST` | `/api/auth/login`             | Login with email + password, returns JWT                  |
+| `GET`  | `/api/auth/me`                | Get the authenticated user's info (JWT)                    |
+| `POST` | `/api/auth/forgot-password`   | Only mounted when `passwordReset` is set                   |
+| `POST` | `/api/auth/reset-password`    | Only mounted when `passwordReset` is set                   |
+| `POST` | `/api/auth/register`          | Only mounted when `register` is set — self-service sign-up |
+| `POST` | `/api/auth/change-password`   | Only mounted when `changePassword: true` — JWT-protected, current-password-verified |
+
+**`register`/`changePassword` example:**
+
+```typescript
+createAuthRouter(UserModel, {
+  jwtSecret: process.env.JWT_SECRET!,
+  register: {
+    idPrefix: 'u',
+    requiredFields: ['username'],   // beyond email/password, checked for presence
+    extraFields: ['username'],      // copied verbatim from the request body onto the new user
+    defaults: { role: 'user' },     // static fields set on every registered user
+  },
+  changePassword: true,
+});
+```
 
 **Login example:**
 
@@ -360,25 +407,6 @@ app.post('/api/my-resource', extractUser, (req, res) => {
   res.json({ userId, data: req.body });
 });
 ```
-
----
-
-### createFileRouter
-
-Creates a router for uploading and downloading files stored as BLOBs in the database. Legacy —
-prefer the [file service](#file-service-appconfigstorage) for anything with more than a handful
-of files, since a BLOB column is pulled into memory by every query on that model.
-
-```typescript
-createFileRouter(Model: Model, fieldConfig: FileFieldConfig): Router
-```
-
-**Endpoints:**
-
-| Method | Path               | Description             |
-|--------|--------------------|-------------------------|
-| `POST` | `/:id/{fieldName}` | Upload a file           |
-| `GET`  | `/:id/{fieldName}` | Download / serve a file |
 
 ---
 

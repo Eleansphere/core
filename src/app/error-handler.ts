@@ -36,22 +36,30 @@ export function defaultErrorHandler(
   err: AppError,
   _req: Request,
   res: Response,
-  _next: NextFunction,
+  _next: NextFunction
 ): void {
   const sequelizeStatus = SEQUELIZE_ERROR_STATUS[err.name];
   const statusCode = err.status ?? err.statusCode ?? sequelizeStatus ?? 500;
 
   if (statusCode >= 500) {
     console.error('[be-core] Unhandled error', err);
-    res
-      .status(statusCode)
-      .json({ error: 'Internal Server Error', message: 'An unexpected error occurred', statusCode });
+    res.status(statusCode).json({
+      error: 'Internal Server Error',
+      message: 'An unexpected error occurred',
+      statusCode,
+    });
     return;
   }
 
-  const error = sequelizeStatus ? HTTP_STATUS_NAMES[statusCode] : err.name !== 'Error' ? err.name : 'Error';
+  const error = sequelizeStatus
+    ? HTTP_STATUS_NAMES[statusCode]
+    : err.name !== 'Error'
+      ? err.name
+      : 'Error';
   const message =
-    sequelizeStatus && err.errors?.length ? err.errors.map((e) => e.message).join(', ') : err.message;
+    sequelizeStatus && err.errors?.length
+      ? err.errors.map((e) => e.message).join(', ')
+      : err.message;
 
   res.status(statusCode).json({ error, message, statusCode });
 }

@@ -1,9 +1,10 @@
 import express, { Express, RequestHandler, ErrorRequestHandler } from 'express';
+import { ModelStatic } from 'sequelize';
 import cors, { CorsOptions } from 'cors';
 import bodyParser from 'body-parser';
 import { createSequelize } from '../db/create-sequelize';
-import { createAuthRouter, PasswordResetConfig } from '../auth/create-auth-router';
-import { ProjectPlugin } from '../types/plugin-types';
+import { createAuthRouter, PasswordResetConfig, RegisterConfig } from '../auth/create-auth-router';
+import { ProjectPlugin } from '../types/project-plugin';
 import { ModelConfig } from '../types/model-config';
 import { initModelsFromConfigs, mountModelRoutes } from '../utils/init-models-from-configs';
 import { defaultErrorHandler } from './error-handler';
@@ -37,6 +38,8 @@ export interface AppConfig {
     modelName: string; // name of the user model (e.g. 'user')
     expiresIn?: string;
     passwordReset?: PasswordResetConfig;
+    register?: RegisterConfig;
+    changePassword?: boolean;
   };
   /** Override the default error handler. Must be an Express 4-arg error middleware. */
   errorHandler?: ErrorRequestHandler;
@@ -70,7 +73,7 @@ export function createApp(config: AppConfig): Express {
   }
 
   // All models are now registered in sequelize.models
-  const allModels = { ...configModels, ...sequelize.models } as Record<string, any>;
+  const allModels: Record<string, ModelStatic<any>> = { ...configModels, ...sequelize.models };
 
   // 3. Sync DB
   sequelize
@@ -119,6 +122,8 @@ export function createApp(config: AppConfig): Express {
       expiresIn: config.auth.expiresIn,
       emailService,
       passwordReset: config.auth.passwordReset,
+      register: config.auth.register,
+      changePassword: config.auth.changePassword,
     });
     app.use('/api/auth', authRouter);
   }

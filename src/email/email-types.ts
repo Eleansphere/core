@@ -17,4 +17,8 @@ export interface EmailService {
   send(options: SendEmailOptions): Promise<void>;
 }
 
-export type EmailTemplateFunction<T> = (data: T) => { subject: string; html: string; text?: string };
+export type EmailTemplateFunction<T> = (data: T) => {
+  subject: string;
+  html: string;
+  text?: string;
+};

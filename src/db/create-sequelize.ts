@@ -26,7 +26,7 @@ export function createSequelize(config: DbConfig): Sequelize {
   if (config.schema) {
     sequelizeOptions.define = { schema: config.schema };
     sequelizeOptions.dialectOptions = {
-      ...(sequelizeOptions.dialectOptions as any),
+      ...(sequelizeOptions.dialectOptions as Record<string, unknown> | undefined),
       options: `-c search_path=${config.schema},public`,
     };
   }
