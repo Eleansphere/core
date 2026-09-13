@@ -1,6 +1,6 @@
 {
   "name": "@eleansphere/entity-core",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Client-side toolkit for be-core apps: define an entity once (fields + validation) and derive its ModelConfig, DTO classes, and HTTP service; plus the ApiClient / abstract service layer and container/model-config wiring helpers.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
