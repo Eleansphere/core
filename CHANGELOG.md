@@ -1,5 +1,68 @@
 # @eleansphere/be-core
 
+## 2.0.0
+
+### Major Changes
+
+- 62361e9: Removed `createFileRouter` and `FileFieldConfig` — the legacy BLOB-in-database file router. Prefer
+  the detached file service (`AppConfig.storage` + `createFileServiceRouter`, an S3-compatible
+  bucket with only a `File` metadata row in Postgres), already used by every project on this. A grep
+  across every consumer repo found no remaining `serviceType: 'file'` entity, so nothing still uses
+  this path.
+
+  Migration: a project on `createFileRouter` needs to move its BLOB column to the detached file
+  service — see `@eleansphere/entity-core`'s `withImages` for the client side of that convention.
+
+- 62361e9: Renamed `GenericCrudOptions` → `CrudRouterOptions` — the `Generic` prefix was filler (there's no
+  non-generic variant to distinguish it from) and didn't match its file, `types/crud-router.ts`.
+
+  Migration: replace `GenericCrudOptions` with `CrudRouterOptions`. A grep across every consumer repo
+  found none importing this type directly (everyone just calls `createCrudRouter({...})` and lets
+  inference handle it) — nothing live needs to change.
+
+### Minor Changes
+
+- 62361e9: `createAuthRouter` (and `AppConfig.auth`) can now mount two more endpoints, opt-in:
+  - `register: { idPrefix, requiredFields?, extraFields?, defaults? }` — mounts `POST /register`
+    (self-service sign-up: required-field check, duplicate-email 409, bcrypt-hashed password).
+  - `changePassword: true` — mounts `POST /change-password` (JWT-protected; verifies the caller's
+    current password before setting a new one). Distinct from `passwordReset`, the unauthenticated
+    forgot-password-by-email flow.
+
+  Migration: none required — both are omitted by default, so existing `auth` configs are unaffected.
+
+- 62361e9: `createCrudRouter` (and `ModelConfig`) grow generic hooks for shapes that previously had to be
+  hand-rolled per project: public-read-protected-write CRUD, row enrichment (attached files),
+  custom list filters/order, and delete side effects.
+  - `protect` — auth middleware applied only to `POST`/`PUT`/`DELETE`; `GET` (list + by id) stays
+    public. `middleware` keeps applying to all five routes as before — this is purely additive.
+  - `buildWhere(req)` — extra `where` filter for the list route, merged with the `userScoped`
+    `ownerId` filter when both are present.
+  - `order` — Sequelize `order` shape for the list route (e.g. `[['sortOrder', 'ASC']]`).
+  - `enrich(rows)` — transforms fetched row(s) before the response is sent (e.g. `attachFiles`),
+    applied consistently to list, get-by-id, create and update responses.
+  - `beforeDelete(entity, req)` — runs before the record is destroyed, for cleaning up related
+    data (e.g. deleting a product's image files from storage before the product row).
+  - `hashFields` — field names to bcrypt-hash on create/update, skipping values that already look
+    like a bcrypt hash. `ModelConfig.fields[name].hash: 'bcrypt'` drives this automatically for
+    auto-mounted routes (see the `hash` field flag, also in this release).
+  - `ModelConfig.activeRange: { from, to }` — mounts a public `GET {routePath}/active` route
+    returning records where `from <= now <= to`, ordered by `from` ascending. Mounted even when
+    `skipAutoRoutes` is set, since that flag only opts a model out of the CRUD routes.
+
+  Migration: none required — every new option is optional and additive.
+
+### Patch Changes
+
+- 62361e9: Internal cleanup, no behavior change for existing usage:
+  - `createExtractUser` is now literally `createVerifyToken` (`export const createExtractUser = createVerifyToken`) instead of a byte-for-byte duplicate implementation — the README already described it as an alias.
+  - `createCrudRouter` and `createFileServiceRouter`'s repeated `try { ... } catch (err) { next(err) }` per route is now a shared `handle()` wrapper.
+  - `init-models-from-configs.ts`'s duplicated field-name filtering (`sensitiveFields`, `hashFields`) now shares one `fieldNamesWhere` helper.
+  - Added ESLint (matching the project's other repos) and a vitest suite covering `createAuthRouter` (login/register/change-password) and `createCrudRouter`'s `hashFields`/`protect`/`buildWhere`/`enrich`/`beforeDelete`.
+  - `req.user` is now a real typed property (`Express.Request` is augmented with an `AuthenticatedUser` — exported) instead of `(req as any).user` scattered across `create-verify-token.ts`/`create-crud-router.ts`/`create-auth-router.ts`. Consumers get this too: any code doing `(req as any).user` can now just use `req.user`.
+  - Tightened several other `any`s that had a real type available: `ModelConfig.default` (`unknown`), `CrudHooks.beforeCreate`/`beforeUpdate` (`Record<string, unknown>` in/out, not `any`), `fieldTypeMap` (Sequelize's own `DataType`), `create-sequelize.ts`'s `dialectOptions` spread, `create-app.ts`'s merged model map (`Record<string, ModelStatic<any>>`, not `Record<string, any>`). Left `ModelStatic<any>` itself alone where it appears (plugin registries, the file service) — that one's an inherent "shape unknown at compile time" boundary of the dynamic-model pattern, not laziness.
+  - Renamed `types/crud-router-types.ts` → `types/crud-router.ts` and `types/plugin-types.ts` → `types/project-plugin.ts` (file names only, not the exported type names — see the `rename-generic-crud-options` changeset for the one type that did rename) — the `-types` suffix was redundant inside a folder already called `types/` (and inconsistent with its siblings `model-config.ts`/`core-entity.ts`/`express-request.ts`, which never had it). Purely internal — nothing imports these files by path.
+
 ## 1.12.0
 
 ### Minor Changes
