@@ -1,4 +1,4 @@
-import { AbstractAuthService } from './abstract-auth.service';
+import { AuthServiceBase } from './auth-base.service';
 
 /** Body of `POST /api/auth/login`. */
 export interface LoginRequest {
@@ -36,7 +36,7 @@ export interface AuthUser {
 export class AuthService<
   TMe extends AuthUser = AuthUser,
   TLoginResponse extends LoginResponse = LoginResponse,
-> extends AbstractAuthService<LoginRequest, TLoginResponse, TMe> {
+> extends AuthServiceBase<LoginRequest, TLoginResponse, TMe> {
   login(credentials: LoginRequest): Promise<TLoginResponse> {
     return this.post<TLoginResponse>('/api/auth/login', credentials);
   }

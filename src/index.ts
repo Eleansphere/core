@@ -16,24 +16,23 @@ export type {
 export type { FieldType } from '@eleansphere/be-core';
 
 // ── Wiring helpers ───────────────────────────────────────────────────────────
-export { createServiceContainer } from './service-container';
-export type { ServiceRegistry, ServiceContainer } from './service-container';
-export { toModelConfigs } from './model-configs';
-export type { ToModelConfigsOptions } from './model-configs';
+export { createServiceContainer } from './wiring/service-container';
+export type { ServiceRegistry, ServiceContainer } from './wiring/service-container';
+export { toModelConfigs } from './wiring/model-configs';
+export type { ToModelConfigsOptions } from './wiring/model-configs';
 
 // ── HTTP / service layer (was @eleansphere/service-core, merged in at 2.0.0) ──
-export { ApiClient } from './api-client';
-export { AbstractCrudService } from './services/abstract-crud.service';
-export type { PaginationParams, PaginatedResponse } from './services/abstract-crud.service';
-export { AbstractFileService } from './services/abstract-file.service';
-export { AbstractAuthService } from './services/abstract-auth.service';
+export { HttpTransport } from './http/http-transport';
+export { ApiError } from './http/api-error';
+export { ApiClient } from './http/api-client';
+export { CrudServiceBase } from './services/crud.service';
+export type { PaginationParams, PaginatedResponse } from './services/crud.service';
+export { AuthServiceBase } from './services/auth-base.service';
 export { AuthService } from './services/auth.service';
 export type { LoginRequest, LoginResponse, AuthUser } from './services/auth.service';
-export { AbstractServiceContainer } from './abstract-service-container';
-export type { FileDto, FileVisibility } from './file-dto';
 
-/**
- * @deprecated `userScoped` is a backend concern (be-core stamps/enforces `ownerId`); this alias
- * added nothing over `AbstractCrudService`. Import that instead. Kept for one major.
- */
-export { AbstractCrudService as AbstractUserScopedCrudService } from './services/abstract-crud.service';
+// ── Files (be-core's detached file service) ───────────────────────────────────
+export { FilesClient } from './files/files-client';
+export type { FilesListParams, FileUploadFields } from './files/files-client';
+export { withImages } from './services/images.service';
+export type { FileDto, FileVisibility } from './files/file-dto';

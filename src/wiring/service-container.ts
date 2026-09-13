@@ -1,5 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-type ServiceConstructor = abstract new (baseUrl: string, tokenProvider: () => string | null) => unknown;
+type ServiceConstructor = abstract new (
+  baseUrl: string,
+  tokenProvider: () => string | null
+) => unknown;
 
 /** A registry entry is either an entity object (its `.Service` is used) or a service class. */
 type RegistryEntry = { Service: ServiceConstructor } | ServiceConstructor;
@@ -9,8 +12,8 @@ export type ServiceRegistry = Record<string, RegistryEntry>;
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
 // Resolves a registry entry to its service *instance* type. A directly-passed service class, and
-// a normal entity's `.Service`, resolve precisely; a `serviceType: 'file'` entity's `.Service` is
-// `AnyConstructor` and resolves to `any` (unchanged legacy behaviour).
+// a normal entity's `.Service`, resolve precisely; the `IsAny` branch is a defensive fallback for
+// a loosely-typed (`any`) service class, which otherwise resolves to `unknown`.
 type InstanceOfEntry<E> = E extends { Service: infer S }
   ? IsAny<S> extends true
     ? any
@@ -52,7 +55,10 @@ export function createServiceContainer<R extends ServiceRegistry>(
     const entryCtor = typeof entry === 'function' ? entry : entry.Service;
     // Every real service class is concrete; `ServiceConstructor` is declared `abstract new` only
     // so `AnyConstructor`-typed `.Service` (file entities) fits the registry.
-    const Service = entryCtor as new (baseUrl: string, tokenProvider: () => string | null) => unknown;
+    const Service = entryCtor as new (
+      baseUrl: string,
+      tokenProvider: () => string | null
+    ) => unknown;
     container[key] = new Service(baseUrl, tokenProvider);
   }
   return container as ServiceContainer<R>;

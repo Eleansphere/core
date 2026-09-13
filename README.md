@@ -7,9 +7,9 @@ service from that single definition — so the backend model, the DTOs, and the 
 never drift apart. Plus the HTTP layer those services are built on (`ApiClient`, the abstract
 service classes, `AuthService`) and the wiring helpers (`createServiceContainer`, `toModelConfigs`).
 
-> **2.0.0** merged in `@eleansphere/service-core` — everything it exported now comes from here, and
-> `extend` is fully typed. `@eleansphere/service-core@2.0.0` is a re-export shim; repoint its
-> imports here and drop the extra dependency.
+> **2.0.0** absorbed `@eleansphere/service-core` (now a deleted repo) — `ApiClient`, the abstract
+> service classes, `AuthService`, `PaginatedResponse`, `FileDto`, etc. all come from here now.
+> `extend` is fully typed.
 
 ## Installation
 
@@ -49,10 +49,9 @@ bookEntity.Dto      // read DTO class — new bookEntity.Dto(data)
 bookEntity.Service   // service class — register it in createServiceContainer({ books: bookEntity, ... })
 ```
 
-For a plain entity, `InstanceType<typeof bookEntity.Service>` is the CRUD surface — `getAll` returns
-`Promise<PaginatedResponse<InferDto<…>>>`, plus `getById` / `create` / `update` / `delete`. Entities that
-use `extend`, or `serviceType: 'file'`, keep `.Service` loose (`any`) for now, and must be instantiated
-through `createServiceContainer` rather than `new entity.Service(...)`.
+`InstanceType<typeof bookEntity.Service>` is the CRUD surface — `getAll` returns
+`Promise<PaginatedResponse<InferDto<…>>>`, plus `getById` / `create` / `update` / `delete` — and, for an
+`extend`-ed entity, whatever the `extend` block added.
 
 ### Options
 
@@ -62,11 +61,10 @@ through `createServiceContainer` rather than `new entity.Service(...)`.
 | `prefix`      | `string`             | ID prefix (`'b'` → `'b_abc123...'`)                                   |
 | `basePath`    | `string`             | Frontend HTTP base path (default `/api/{name}s`)                     |
 | `routePath`   | `string`             | Override backend route path if it differs from `basePath`             |
-| `userScoped`  | `boolean`            | JWT-required + `ownerId`-filtered on both backend and frontend        |
-| `serviceType` | `'crud' \| 'file'`   | `'file'` generates an `AbstractFileService`-based service              |
-| `uploadField` | `string`             | Field name for file uploads (`serviceType: 'file'`, default `'file'`) |
+| `userScoped`  | `boolean`            | Backend only — be-core stamps/enforces `ownerId` (entity needs an `ownerId` field) |
+| `activeRange` | `{ from, to }`       | Backend mounts a public `GET {basePath}/active` route (be-core `ModelConfig.activeRange`) |
 | `fields`      | `Fields`             | Field definitions — see below                                         |
-| `extend`      | `(Base) => Base`     | Add custom methods to the generated service class                     |
+| `extend`      | `(Base) => class`    | Add custom methods to the generated service class (see below)         |
 
 **Field types:** `STRING`, `TEXT`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `BLOB`. `FieldDef` is built on
 be-core's own `FieldType` and `FieldValidation` (be-core is a dependency of this package), so every be-core
@@ -96,6 +94,17 @@ type while the backend was still returning the hash in every response). `writeOn
 Still present in `CreateDto`/`UpdateDto` — a password has to be submittable on create/update, it's just never sent
 back.
 
+### `hash` — bcrypt on create/update
+
+```typescript
+password: { type: 'STRING', required: true, minLength: 6, writeOnly: true, hash: 'bcrypt' },
+```
+
+`hash: 'bcrypt'` hashes the field server-side (be-core) on create/update, skipping values that
+already look like a bcrypt hash — so resubmitting an unchanged password on update doesn't hash it
+twice. Typically paired with `writeOnly: true`. `minLength`/`maxLength` etc. validate the plaintext
+value before it's hashed.
+
 ### `userScoped` entities
 
 All routes require a JWT, and be-core stamps `ownerId` from the token on create and enforces it on
@@ -124,6 +133,56 @@ export const loanEntity = defineEntity({
 `loanEntity.Service`'s instance type is now `CrudServiceInstance & { getByBook(...) }`, so
 `getServices().loans.getByBook(...)` **and** `.getAll()` are both typed. The older
 `class extends (Base as any)` + `(this as any)` still compiles.
+
+### `withImages` — the client side of be-core's detached file service
+
+An entity whose records have attached images (product photos, gallery items, …) needs
+`listImages`/`uploadImage`/`deleteImage` against be-core's generic `/api/files` endpoint
+(`refType`/`refId`/`role: 'image'`). Wrap `extend`'s `Base` with `withImages` instead of
+hand-writing the same three methods per entity:
+
+```typescript
+import { defineEntity, withImages } from '@eleansphere/entity-core';
+
+export const productEntity = defineEntity({
+  name: 'Product',
+  prefix: 'prod',
+  fields: { /* ... */ },
+  extend: (Base) =>
+    class extends withImages(Base, 'Product') {
+      // entity-specific overrides/additions still go here
+    },
+});
+```
+
+`productEntity.Service`'s instances get `listImages(refId)`, `uploadImage(refId, file, sortOrder?)`,
+and `deleteImage(fileId)` — the backend side is be-core's `attachFiles` in the model config's
+`enrich` option. `withImages` is a thin `role: 'image'` convenience over `FilesClient`.
+
+## HTTP layer
+
+Split by concern instead of one class doing everything:
+
+| Class | Role |
+| --- | --- |
+| `HttpTransport` | fetch + auth headers + turning a non-2xx response into an `ApiError`. Base class only — extend it to build a new kind of client. |
+| `ApiClient` | the CRUD JSON verbs (`get`/`post`/`put`/`httpDelete`) every generated entity service and `AuthService` extend. |
+| `FilesClient` | client for be-core's detached file service (`/api/files`): `list(params)` / `upload(fields)` / `remove(fileId)`. Not part of the generated-service chain — files aren't a CRUD resource. Construct one directly for anything `withImages` doesn't cover (an arbitrary `role`, no fixed `refType`, …). |
+
+### `ApiError`
+
+Thrown for any non-2xx response — `status`, the parsed `body`, and `isAuthError`/`isNotFound`
+getters, instead of a bare `Error` with a message string to match against:
+
+```typescript
+try {
+  await productEntity.Service.getById(id);
+} catch (err) {
+  if (err instanceof ApiError && err.isAuthError) {
+    logout();
+  }
+}
+```
 
 ## Wiring helpers
 
