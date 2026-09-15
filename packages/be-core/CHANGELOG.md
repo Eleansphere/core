@@ -1,5 +1,70 @@
 # @eleansphere/be-core
 
+## 3.0.0-next.0
+
+### Major Changes
+
+- 6fd3e96: Declarative access, list queries, partial updates and `createCore`.
+
+  **New**
+
+  - `createCore(config)` builds models, routes and services and awaits the schema sync without listening; returns `{ app, sequelize, models, emailService, storage, listen(), close() }`. Use it for servers, scripts and scheduled jobs, and tests. `createApp` now listens only after the sync finished.
+  - Field types `DATEONLY` and `ENUM` (stored as VARCHAR, validated against `values`); `readOnly` fields are never accepted from a request body.
+  - `ModelConfig.access: { read, write }` with `public | auth | owner | admin | { roles }`. `createCrudRouter` also accepts per-request functions (`(req) => boolean | where`), and `AppConfig.routes[modelName]` lets a server override access, hooks, `enrich`, `buildWhere` and `beforeDelete` of an auto-mounted model without `skipAutoRoutes`.
+  - `ModelConfig.query` whitelists list parameters: filters (`eq`, `in`, `range`, `isNull`), `?sort=-a,b`, `?q=` search (ILIKE, wildcards escaped), `page`/`limit` with a default and a clamped maximum. Unknown parameters, unsortable columns and badly typed values are 400s.
+  - `ModelConfig.indexes`, including partial indexes (`where: { returnedAt: null }`).
+  - Owner-scoped models get an indexed `ownerId` column automatically; there's no need to declare it.
+  - `PATCH /:id` on every CRUD router.
+  - `auth.tokenClaims` copies user columns (e.g. `role`) into the JWT; login also returns `id`.
+  - `createOptionalUser`, `createRequireRole`, `evaluateAccess`, `parseListQuery`, `combineWhere`, `ValidationError`.
+
+  **Breaking**
+
+  - Auto-mounted routes of a model without `access` (and not `userScoped`) now require a signed-in user. Before, they were open to anyone. Add `access: { read: 'public' }` (or `write`) where that was intended.
+  - Validation errors are `400 { error, message, statusCode, issues: [{ path, code, params }] }` and run the shared `validateFields`: values must have the right JSON type (e.g. `"5"` is no longer an `INTEGER`), `format: 'url'` accepts only `http(s)` URLs, and the email check is stricter.
+  - `PUT /:id` is now a partial update, like `PATCH`: only the fields sent are validated and changed, and `hooks.beforeUpdate` receives only those fields.
+  - Request bodies are stripped of `id`, `createdAt`, `updatedAt`, `readOnly` fields and, under an owner policy, `ownerId`, on both create and update. `generateId` still sets the id.
+  - Starting fails when an auto-routed model uses a role-based policy and `auth.tokenClaims` lacks `'role'`.
+  - `mountModelRoutes(configs, models, app, jwtSecret)` → `mountModelRoutes(configs, models, app, { jwtSecret, routes })`.
+  - `createVerifyToken` requires the `Bearer` scheme.
+  - With a `query` config, list responses are always paginated (`{ data, total, page, limit }`) and ordered by `?sort` / `query.defaultSort`; the router's `order` option applies only without `query`.
+  - `FieldType`, `FieldConfig`, `ModelConfig` and friends are now defined in `@eleansphere/schema` (still re-exported from be-core).
+
+  **Migrating Klotilda (all models `custom`, routers built with `createCrudRouter`)**: routers without `access` behave as before. Clients calling `PUT` with a full body keep working. Upgrade together with entity-core 4 (its `update()` sends `PATCH`).
+
+- a5cd5aa: Foreign keys, migrations, auth v3, email transports and a hardened file service.
+
+  **New**
+
+  - Fields with `references` get foreign keys (`RESTRICT` by default, emitted as `NO ACTION` so one delete cascading to both sides still works; `CASCADE`; `SET NULL`). Create and update reject ids that don't exist or belong to another user (`400`, `reference` issue). Owner-scoped models get `ownerId` → auth model `ON DELETE CASCADE`.
+  - `syncMode: 'migrate'` runs `AppConfig.migrations` through umzug (`runMigrations`, `revertMigrations`); every migration receives `{ queryInterface, sequelize, schema }`.
+  - Auth:
+    - rotating refresh tokens with reuse detection (`auth.refreshTokens`, `POST /refresh`, `POST /logout`)
+    - registration validated by the user model's fields, answered with a session
+    - `GET /me` from the database, `PATCH /me` (`profileFields`), `DELETE /me` (`deleteAccount`: deletes owned rows and uploaded files)
+    - single-use password reset links; a password change or reset logs every other session out
+    - per-client rate limiting on credential routes (`rateLimit`, `429`); `AppConfig.trustProxy`
+  - Email transports: `smtp`, `resend` (HTTP API, no SDK), `log`, or any `EmailTransport` instance (`MemoryEmailTransport` for tests). Failures surface as `EmailError`.
+  - File service: an `authorize` hook (`defaultFileAuthorizer`), a MIME allowlist (`allowedMimeTypes`, no SVG by default), `singleRoles` (a new avatar or cover replaces the old one), `X-Content-Type-Options: nosniff`, and `storage.adapter` for any `StorageAdapter` (`MemoryStorageAdapter`).
+
+  **Breaking**
+
+  - `EmailConfig` is `{ from, transport }`; SMTP settings move to `transport: { kind: 'smtp', host, port, secure, auth }`. (Klotilda: `klotilda-api/src/plugins/orders/email.service.ts` is the only call to update.)
+  - `passwordReset.template` is required, and `passwordReset` without `AppConfig.email` fails at startup instead of silently sending nothing.
+  - `register` is `{ idPrefix, fields?, defaults? }`: `requiredFields` / `extraFields` are gone (required-ness comes from the user model's fields). It answers `201` with a session instead of `{ message }`.
+  - `GET /api/auth/me` returns the user row from the database (404 once deleted) instead of the token's `{ id, email }`.
+  - Missing credentials are `400` with `required` issues.
+  - Owner-scoped models reference their owner, so rows can only be created for users that exist.
+  - File service: uploads need a signed-in user by default; private files are served only to their uploader; only the uploader may delete; `GET /api/files?ownerId=` is gone; types outside the allowlist (e.g. SVG) are refused.
+  - Credential routes are rate-limited by default (20 requests per 15 minutes per client); use `auth.rateLimit: 'off'` in tests.
+  - `createApp` / `createCore` builds with `mountModelRoutes` receiving every registered model (plugin models included).
+
+### Patch Changes
+
+- Updated dependencies [6fd3e96]
+- Updated dependencies [a5cd5aa]
+  - @eleansphere/schema@1.0.0-next.0
+
 ## 2.0.0
 
 ### Major Changes
