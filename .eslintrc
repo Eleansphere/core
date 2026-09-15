@@ -8,8 +8,8 @@
     "plugin:@typescript-eslint/recommended",
     "plugin:prettier/recommended"
   ],
-  "env": { "node": true },
-  "ignorePatterns": ["dist/"],
+  "env": { "node": true, "es2022": true },
+  "ignorePatterns": ["dist/", "node_modules/"],
   "rules": {
     "prettier/prettier": "error",
 
@@ -18,5 +18,11 @@
       { "argsIgnorePattern": "^_", "ignoreRestSiblings": true }
     ],
     "@typescript-eslint/no-explicit-any": "warn"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["packages/entity-core/**/*.ts"],
+      "env": { "browser": true }
+    }
+  ]
 }
