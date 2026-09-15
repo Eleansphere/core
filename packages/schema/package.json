@@ -1,6 +1,6 @@
 {
   "name": "@eleansphere/schema",
-  "version": "0.0.0",
+  "version": "1.0.0-next.0",
   "description": "Zero-dependency field vocabulary shared by be-core and entity-core: field and model config types, validateFields, calendar-date helpers.",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
