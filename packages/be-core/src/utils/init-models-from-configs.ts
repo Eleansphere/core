@@ -10,14 +10,7 @@ import {
 } from 'sequelize';
 import { Express, Request, Response, NextFunction } from 'express';
 import { OWNER_FIELD, validateFields } from '@eleansphere/schema';
-import type {
-  AccessConfig,
-  AccessPolicy,
-  FieldConfig,
-  FieldType,
-  ModelConfig,
-  ValidationMode,
-} from '@eleansphere/schema';
+import type { FieldConfig, FieldType, ModelConfig, ValidationMode } from '@eleansphere/schema';
 import { CoreEntity } from '../types/core-entity';
 import { createCrudRouter } from './create-crud-router';
 import { generateId } from './generate-id';
@@ -25,6 +18,8 @@ import { createOptionalUser } from '../auth/create-verify-token';
 import { ValidationError } from '../app/error-handler';
 import type { CrudHook, CrudRouterOptions } from '../types/crud-router';
 import type { AccessRules } from '../access/access-rules';
+import { isOwnerScoped, resolveModelAccess } from './model-access';
+import { createReferenceCheckHook } from '../db/check-references';
 
 const fieldTypeMap: Record<FieldType, DataType> = {
   STRING: DataTypes.STRING,
@@ -39,14 +34,11 @@ const fieldTypeMap: Record<FieldType, DataType> = {
   BLOB: DataTypes.BLOB,
 };
 
-/** Applies to every operation a model's config leaves out, unless the model is `userScoped`. */
-export const DEFAULT_ACCESS_POLICY: AccessPolicy = 'auth';
-
 /**
  * Server-side additions to one model's auto-mounted routes (`AppConfig.routes[modelName]`). What
  * the `ModelConfig` already declares (id prefix, fields, query, read-only fields) can't be
  * overridden here. `access` rules replace the config's policy per operation (e.g. with a
- * function); `hooks` run after field validation.
+ * function); `hooks` run after field validation and reference checks.
  */
 export type ModelRouteOverrides = Partial<
   Omit<
@@ -69,19 +61,10 @@ export interface MountModelRoutesOptions {
   routes?: Record<string, ModelRouteOverrides>;
 }
 
-/** A model's access policies with defaults filled in: `owner` when `userScoped`, else `auth`. */
-export function resolveModelAccess(config: ModelConfig): AccessConfig {
-  const fallback: AccessPolicy = config.userScoped ? 'owner' : DEFAULT_ACCESS_POLICY;
-  return {
-    read: config.access?.read ?? fallback,
-    write: config.access?.write ?? fallback,
-  };
-}
-
-/** Rows of an owner-scoped model belong to a user: it gets an indexed `ownerId` column. */
-export function isOwnerScoped(config: ModelConfig): boolean {
-  const { read, write } = resolveModelAccess(config);
-  return read === 'owner' || write === 'owner';
+interface ModelRouterContext {
+  jwtSecret: string | undefined;
+  overrides: ModelRouteOverrides;
+  referenceCheck: CrudHook | undefined;
 }
 
 /** Names of the fields matching `predicate` — e.g. every field flagged `sensitive` or `hash`. */
@@ -203,10 +186,13 @@ function buildAccessRules(config: ModelConfig, overrides: AccessRules | undefine
 function buildModelRouterOptions(
   config: ModelConfig,
   model: ModelStatic<any>,
-  jwtSecret: string | undefined,
-  overrides: ModelRouteOverrides
+  { jwtSecret, overrides, referenceCheck }: ModelRouterContext
 ): CrudRouterOptions<any> {
   const { access: accessOverrides, hooks: hookOverrides, ...otherOverrides } = overrides;
+  // Server-side checks first (field rules, then references), the app's own hook last.
+  const writeHook = (mode: ValidationMode, appHook: CrudHook | undefined) =>
+    chainHooks(chainHooks(createValidationHook(config.fields, mode), referenceCheck), appHook);
+
   return {
     ...otherOverrides,
     model,
@@ -220,24 +206,24 @@ function buildModelRouterOptions(
     readOnlyFields: fieldNamesWhere(config.fields, (field) => !!field.readOnly),
     hashFields: fieldNamesWhere(config.fields, (field) => field.hash === 'bcrypt'),
     hooks: {
-      beforeCreate: chainHooks(
-        createValidationHook(config.fields, 'create'),
-        hookOverrides?.beforeCreate
-      ),
-      beforeUpdate: chainHooks(
-        createValidationHook(config.fields, 'patch'),
-        hookOverrides?.beforeUpdate
-      ),
+      beforeCreate: writeHook('create', hookOverrides?.beforeCreate),
+      beforeUpdate: writeHook('patch', hookOverrides?.beforeUpdate),
     },
   };
 }
 
+/**
+ * Mounts the CRUD routes of every config without `skipAutoRoutes`. `models` must hold every
+ * registered model (plugin models included), so references to them can be checked.
+ */
 export function mountModelRoutes(
   configs: ModelConfig[],
   models: Record<string, ModelStatic<any>>,
   app: Express,
   { jwtSecret, routes = {} }: MountModelRoutesOptions = {}
 ): void {
+  const configsByName = new Map(configs.map((config) => [config.name, config]));
+
   for (const config of configs) {
     const model = models[config.name];
     const routePath = config.routePath ?? `/api/${config.name}s`;
@@ -251,9 +237,11 @@ export function mountModelRoutes(
 
     if (config.skipAutoRoutes) continue;
 
-    app.use(
-      routePath,
-      createCrudRouter(buildModelRouterOptions(config, model, jwtSecret, routes[config.name] ?? {}))
-    );
+    const routerOptions = buildModelRouterOptions(config, model, {
+      jwtSecret,
+      overrides: routes[config.name] ?? {},
+      referenceCheck: createReferenceCheckHook(config, configsByName, models),
+    });
+    app.use(routePath, createCrudRouter(routerOptions));
   }
 }

@@ -1,5 +1,6 @@
 import type { AccessConfig, IndexConfig, ModelConfig, QueryConfig } from '@eleansphere/schema';
 import type { ApiClient } from './http/api-client';
+import type { AccessTokenSource } from './http/http-transport';
 import { CrudServiceBase } from './services/crud.service';
 import type { PaginatedResponse } from './services/list-request';
 import type {
@@ -38,7 +39,7 @@ function makeDtoClass<T>(stripKeys: string[] = []): DtoClass<T> {
 type AnyConstructor = abstract new (...args: any[]) => any;
 
 /** A service constructor as instantiated by `createServiceContainer` / a project container. */
-type ServiceCtor<Instance> = new (baseUrl: string, tokenProvider: () => string | null) => Instance;
+type ServiceCtor<Instance> = new (baseUrl: string, tokenSource: AccessTokenSource) => Instance;
 
 /**
  * The public CRUD surface of a generated service — what `InstanceType<typeof entity.Service>` is
@@ -62,12 +63,12 @@ export type CrudServiceInstance<
 
 /**
  * The HTTP helpers an `extend` body reaches for on `this` — the `ApiClient` verbs, `basePath`,
- * and `baseUrl`/`tokenProvider` (so a mixin like `withImages` can build its own `FilesClient`
+ * and `baseUrl`/`tokenSource` (so a mixin like `withFiles` can build its own `FilesClient`
  * scoped to the same backend/auth).
  */
 type ServiceHttpHelpers = Pick<
   ApiClient,
-  'baseUrl' | 'tokenProvider' | 'get' | 'post' | 'put' | 'patch' | 'httpDelete'
+  'baseUrl' | 'tokenSource' | 'get' | 'post' | 'put' | 'patch' | 'httpDelete'
 > & {
   readonly basePath: string;
 };
@@ -82,7 +83,7 @@ export type ExtendableService<
   TQuery = NoQuery,
 > = new (
   baseUrl: string,
-  tokenProvider: () => string | null
+  tokenSource: AccessTokenSource
 ) => CrudServiceInstance<TFields, TOwned, TQuery> & ServiceHttpHelpers;
 
 // ── defineEntity ──────────────────────────────────────────────────────────────

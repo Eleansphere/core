@@ -22,8 +22,31 @@ export interface FieldValidation {
   format?: StringFormat;
 }
 
+/**
+ * What happens to referencing rows when the referenced row is deleted.
+ *
+ * - `RESTRICT` (default): the delete is refused while references exist (checked at the end of the
+ *   statement, so a delete that also removes the referencing rows, like an account deletion
+ *   cascading to both, still works)
+ * - `CASCADE`: referencing rows are deleted too
+ * - `SET NULL`: the reference is cleared; the field must not be `required`
+ */
+export type ReferenceAction = 'RESTRICT' | 'CASCADE' | 'SET NULL';
+
+export interface ReferenceConfig {
+  /** `ModelConfig.name` of the referenced model. */
+  model: string;
+  onDelete?: ReferenceAction;
+}
+
 export interface FieldConfig extends FieldValidation {
   type: FieldType;
+  /**
+   * The field holds the id of another model's row: be-core adds a foreign key and rejects, on
+   * create and update, ids that don't exist or that belong to someone else (for an owner-scoped
+   * target) with a `reference` issue.
+   */
+  references?: ReferenceConfig;
   /** Allowed values of an `ENUM` field. */
   values?: readonly string[];
   default?: unknown;

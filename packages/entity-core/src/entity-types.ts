@@ -5,6 +5,7 @@ import type {
   IndexConfig,
   QueryConfig,
   RangeBound,
+  ReferenceConfig,
 } from '@eleansphere/schema';
 
 // ── Field definitions ─────────────────────────────────────────────────────────
@@ -25,6 +26,11 @@ type BaseFieldDef = Omit<FieldValidation, 'required'> & {
   default?: unknown;
   /** Hash with bcrypt server-side before saving. Typically paired with `writeOnly`. */
   hash?: 'bcrypt';
+  /**
+   * The field holds another entity's id: the server adds a foreign key and rejects ids that don't
+   * exist or aren't the caller's (for a `userScoped` target). `onDelete` defaults to `RESTRICT`.
+   */
+  references?: ReferenceConfig;
 };
 
 /** One field. An `ENUM` must list its `values`; they become a union type in the DTOs. */

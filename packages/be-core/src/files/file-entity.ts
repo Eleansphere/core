@@ -53,6 +53,7 @@ export const fileEntityConfig: ModelConfig = {
     role: { type: 'STRING' },
     sortOrder: { type: 'INTEGER', default: 0 },
   },
+  indexes: [{ fields: ['refType', 'refId', 'role'] }, { fields: ['ownerId'] }],
 };
 
 /** Serialises a `File` model instance to a {@link FileDto}, resolving its load URL. */

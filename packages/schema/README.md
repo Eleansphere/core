@@ -39,7 +39,8 @@ const loan: ModelConfig = {
 | `BLOB` | binary | not validated |
 
 Field flags: `required`, `unique`, `default`, `sensitive` (stripped from responses), `hash: 'bcrypt'`,
-`readOnly` (server-managed, never accepted from a request body).
+`readOnly` (server-managed, never accepted from a request body), `references: { model, onDelete }`
+(the field holds another model's id; `onDelete` is `RESTRICT` by default, or `CASCADE` / `SET NULL`).
 
 Model options: `access` (`public` / `auth` / `owner` / `admin` / `{ roles }` per `read` and
 `write`, default `auth`), `userScoped` (= `owner` for both), `query` (whitelisted list filters,

@@ -22,7 +22,7 @@ pnpm add @eleansphere/entity-core
 ## defineEntity
 
 ```typescript
-import { defineEntity } from '@eleansphere/entity-core';
+import { defineEntity, withFiles } from '@eleansphere/entity-core';
 
 export const bookEntity = defineEntity({
   name: 'book',
@@ -31,6 +31,7 @@ export const bookEntity = defineEntity({
   fields: {
     title: { type: 'STRING', required: true, maxLength: 200 },
     author: { type: 'STRING', maxLength: 100 },
+    shelfId: { type: 'STRING', references: { model: 'shelf', onDelete: 'SET NULL' } },
     readingStatus: { type: 'ENUM', values: ['none', 'want', 'reading', 'read'], default: 'none' },
     rating: { type: 'INTEGER', min: 1, max: 5 },
     finishedAt: { type: 'DATEONLY' },
@@ -43,6 +44,7 @@ export const bookEntity = defineEntity({
     search: ['title', 'author'],
   },
   indexes: [{ fields: ['ownerId', 'title'] }],
+  extend: (Base) => class extends withFiles(Base, 'book', ['cover']) {},
 });
 ```
 
@@ -82,6 +84,7 @@ Types: `STRING`, `TEXT`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE` (ISO string), `DA
 | `writeOnly: true` | excluded (also stripped by `new Dto(data)`) | included | stripped from responses |
 | `readOnly: true` | included | excluded | stripped from request bodies |
 | `hash: 'bcrypt'` | | | hashed before saving |
+| `references: { model, onDelete? }` | | | foreign key; ids that don't exist or aren't yours are rejected |
 
 - **Read DTO**: `id`, `createdAt`, `updatedAt` always; `ownerId` for `userScoped`; required fields and
   fields with a default are non-null, the rest `T | null`.
@@ -115,7 +118,7 @@ list (`in`), `{ gte, lte, gt, lt }` (`range`), `{ isNull: boolean }` (`isNull`).
 ### Extending a service
 
 `Base` is a real class; `this` has the CRUD methods and the HTTP helpers (`get`, `post`, `put`,
-`patch`, `httpDelete`, `basePath`), all typed:
+`patch`, `httpDelete`, `basePath`, `baseUrl`, `tokenSource`), all typed:
 
 ```typescript
 export const loanEntity = defineEntity({
@@ -132,11 +135,59 @@ export const loanEntity = defineEntity({
 });
 ```
 
-### withImages
+### Files: withFiles
 
-`extend: (Base) => class extends withImages(Base, 'Product') {}` adds `listImages(refId)`,
-`uploadImage(refId, file, sortOrder?)` and `deleteImage(fileId)` over be-core's file service
-(`role: 'image'`). For other roles use `FilesClient` directly: `list`, `upload`, `remove`.
+`extend: (Base) => class extends withFiles(Base, 'book', ['cover', 'gallery']) {}` adds
+`files(role)`, scoped to this entity and one of the declared roles (anything else is a compile
+error):
+
+```typescript
+await services.books.files('cover').upload(bookId, resizedImage, { visibility: 'public' });
+await services.books.files('gallery').list(bookId);
+await services.books.files('gallery').remove(fileId);
+```
+
+`withImages(Base, refType)` is the `role: 'image'` shorthand: `listImages`, `uploadImage`,
+`deleteImage`. For anything else use `FilesClient` directly: `list`, `upload`, `remove`.
+
+## Sessions: AuthSession
+
+```typescript
+import { AuthSession, AuthService, createServiceContainer, createWebSessionStorage } from '@eleansphere/entity-core';
+
+export const session = new AuthSession({
+  baseUrl: import.meta.env.VITE_API_URL,
+  storage: createWebSessionStorage('kniho-hlod.session'),
+  onSessionExpired: () => router.push('/login'),
+});
+
+export const services = createServiceContainer(
+  { auth: AuthService, books: bookEntity, loans: loanEntity },
+  import.meta.env.VITE_API_URL,
+  session
+);
+
+session.start(await services.auth.login({ email, password })); // stores token + refreshToken
+```
+
+With an `AuthSession` as token source, a request answered with `401` is retried once after the
+session renews the access token (`POST /api/auth/refresh`). Requests failing at the same time share
+one refresh, and tokens another tab already renewed are reused. When the refresh token is rejected,
+the session is cleared and `onSessionExpired` runs. A plain function (`() => token`) still works,
+without renewal.
+
+## AuthService
+
+| Method | Server route |
+|---|---|
+| `login({ email, password })` | `POST /api/auth/login` → `{ token, refreshToken?, id, email, role, user }` |
+| `register(data)` | `POST /api/auth/register` → same session shape |
+| `me()` / `updateMe(changes)` / `deleteMe(password)` | `GET` / `PATCH` / `DELETE /api/auth/me` |
+| `changePassword(current, next)` | `POST /api/auth/change-password` → new session |
+| `refresh(refreshToken)` / `logout(refreshToken)` | `POST /api/auth/refresh` / `logout` |
+| `forgotPassword(email)` / `resetPassword(token, newPassword)` | password reset |
+
+Type it with your user model: `AuthService<User, RegisterRequest & { displayName: string }, { displayName?: string }>`.
 
 ## Forms: toStandardSchema
 
@@ -164,10 +215,9 @@ A [Standard Schema](https://standardschema.dev) running the same `validateFields
 
 | Class | Role |
 |---|---|
-| `HttpTransport` | `fetch`, auth header, non-2xx → `ApiError`; base for new clients |
-| `ApiClient` | `get` / `post` / `put` / `patch` / `httpDelete`; base of every service |
+| `HttpTransport` | `fetch`, auth header, token renewal with an `AuthSession`, non-2xx → `ApiError`; base for new clients |
+| `ApiClient` | `get` / `post` / `put` / `patch` / `httpDelete(path, body?)`; base of every service |
 | `CrudServiceBase` | `getAll` / `getById` / `create` / `update` / `delete` for hand-written services |
-| `AuthService` | `login` (→ `{ token, id, email, role }`), `me`, `forgotPassword`, `resetPassword` |
 | `FilesClient` | be-core's `/api/files` |
 
 `ApiError` carries `status`, the parsed `body`, `isAuthError` (401/403), `isNotFound`, `detail`
@@ -183,21 +233,10 @@ try {
 
 ## Wiring helpers
 
-```typescript
-// frontend
-export const services = createServiceContainer(
-  { auth: AuthService, books: bookEntity, loans: loanEntity },
-  import.meta.env.VITE_API_URL,
-  () => session.token
-);
-
-// backend
-const core = await createCore({ modelConfigs: toModelConfigs(allEntities, { custom: ['user'] }), … });
-```
-
-`createServiceContainer` instantiates each service class or entity `.Service` with the same base
-URL and token provider. `toModelConfigs` turns an entity registry into `ModelConfig[]`; `custom`
-names get `skipAutoRoutes`.
+`createServiceContainer(registry, baseUrl, tokenSource)` instantiates each service class or entity
+`.Service` with the same base URL and token source (an `AuthSession` or a token function).
+`toModelConfigs(allEntities, { custom })` turns an entity registry into `ModelConfig[]` for
+`createCore`; `custom` names get `skipAutoRoutes`.
 
 ## Development
 

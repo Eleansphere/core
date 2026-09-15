@@ -1,8 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-type ServiceConstructor = abstract new (
-  baseUrl: string,
-  tokenProvider: () => string | null
-) => unknown;
+import type { AccessTokenSource } from '../http/http-transport';
+
+type ServiceConstructor = abstract new (baseUrl: string, tokenSource: AccessTokenSource) => unknown;
 
 /** A registry entry is either an entity object (its `.Service` is used) or a service class. */
 type RegistryEntry = { Service: ServiceConstructor } | ServiceConstructor;
@@ -29,15 +28,15 @@ export type ServiceContainer<R extends ServiceRegistry> = {
 };
 
 /**
- * Instantiates every service in `registry` with the same `baseUrl` + `tokenProvider` and returns
- * a plain typed object — replacing hand-written `AbstractServiceContainer` subclasses where each
- * `this.x = new X(...this.args())` line could drift from the entity list.
+ * Instantiates every service in `registry` with the same `baseUrl` and token source and returns a
+ * plain typed object.
  *
  * ```ts
+ * const session = new AuthSession({ baseUrl, storage: createWebSessionStorage('session') });
  * export const services = createServiceContainer(
  *   { auth: AuthService, books: bookEntity, loans: loanEntity },
- *   import.meta.env.VITE_BACKEND_URL,
- *   () => localStorage.getItem('token'),
+ *   baseUrl,
+ *   session, // or () => token — without automatic renewal
  * );
  * services.books.getAll();
  * ```
@@ -48,18 +47,15 @@ export type ServiceContainer<R extends ServiceRegistry> = {
 export function createServiceContainer<R extends ServiceRegistry>(
   registry: R,
   baseUrl: string,
-  tokenProvider: () => string | null
+  tokenSource: AccessTokenSource
 ): ServiceContainer<R> {
   const container: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(registry)) {
     const entryCtor = typeof entry === 'function' ? entry : entry.Service;
     // Every real service class is concrete; `ServiceConstructor` is declared `abstract new` only
-    // so `AnyConstructor`-typed `.Service` (file entities) fits the registry.
-    const Service = entryCtor as new (
-      baseUrl: string,
-      tokenProvider: () => string | null
-    ) => unknown;
-    container[key] = new Service(baseUrl, tokenProvider);
+    // so loosely typed `.Service` classes fit the registry.
+    const Service = entryCtor as new (baseUrl: string, tokenSource: AccessTokenSource) => unknown;
+    container[key] = new Service(baseUrl, tokenSource);
   }
   return container as ServiceContainer<R>;
 }

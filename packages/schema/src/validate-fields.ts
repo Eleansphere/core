@@ -6,7 +6,18 @@ import { isDateOnly } from './dates';
  * showing server-written English text.
  */
 export type ValidationIssueCode =
-  'required' | 'type' | 'enum' | 'minLength' | 'maxLength' | 'min' | 'max' | 'format' | 'unique';
+  | 'required'
+  | 'type'
+  | 'enum'
+  | 'minLength'
+  | 'maxLength'
+  | 'min'
+  | 'max'
+  | 'format'
+  /** Server-side: another row already has this value. */
+  | 'unique'
+  /** Server-side: the referenced row doesn't exist or isn't the caller's. */
+  | 'reference';
 
 export interface ValidationIssue {
   /** Name of the offending field. */

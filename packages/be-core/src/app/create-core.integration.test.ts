@@ -97,6 +97,14 @@ describe('createCore against Postgres', () => {
   beforeAll(async () => {
     testSchema = await createTestSchema();
     core = await createCore(baseConfig());
+    // Owner-scoped rows reference their owner, so the users behind the test tokens must exist.
+    await core.models.user.bulkCreate(
+      ['u_alice', 'u_bob', 'u_root', 'u_carol'].map((id) => ({
+        id,
+        email: `${id}@test.cz`,
+        password: 'not-used-for-login',
+      }))
+    );
   });
 
   afterAll(async () => {

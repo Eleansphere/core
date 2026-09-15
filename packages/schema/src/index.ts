@@ -1,4 +1,11 @@
-export type { FieldType, StringFormat, FieldValidation, FieldConfig } from './field-config';
+export type {
+  FieldType,
+  StringFormat,
+  FieldValidation,
+  FieldConfig,
+  ReferenceAction,
+  ReferenceConfig,
+} from './field-config';
 export { SYSTEM_FIELDS, OWNER_FIELD } from './field-config';
 
 export type {

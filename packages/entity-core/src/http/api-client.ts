@@ -2,8 +2,8 @@ import { HttpTransport } from './http-transport';
 
 /**
  * The JSON verbs every generated entity service (and `AuthService`) is built on. Transport
- * concerns (auth headers, error handling) live in `HttpTransport`; file upload lives in
- * `FilesClient` — this class is just `get`/`post`/`put`/`patch`/`httpDelete`.
+ * concerns (auth headers, token renewal, error handling) live in `HttpTransport`; file upload
+ * lives in `FilesClient` — this class is just `get`/`post`/`put`/`patch`/`httpDelete`.
  */
 export class ApiClient extends HttpTransport {
   get<T, P extends object = Record<string, never>>(path: string, params?: P): Promise<T> {
@@ -22,7 +22,7 @@ export class ApiClient extends HttpTransport {
     return this.patchJson<T>(path, body);
   }
 
-  httpDelete(path: string): Promise<void> {
-    return this.deleteRequest(path);
+  httpDelete(path: string, body?: unknown): Promise<void> {
+    return this.deleteRequest(path, body);
   }
 }

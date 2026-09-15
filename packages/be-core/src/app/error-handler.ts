@@ -8,6 +8,7 @@ const HTTP_STATUS_NAMES: Record<number, string> = {
   404: 'Not Found',
   409: 'Conflict',
   422: 'Unprocessable Entity',
+  429: 'Too Many Requests',
 };
 
 const INTERNAL_SERVER_ERROR = 500;
