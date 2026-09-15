@@ -1,6 +1,6 @@
 # @eleansphere/schema
 
-## 1.0.0-next.0
+## 1.0.0
 
 ### Major Changes
 
