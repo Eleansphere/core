@@ -2,34 +2,76 @@
 export { DataTypes, Sequelize } from 'sequelize';
 
 // App
-export { createApp } from './app/create-app';
-export type { AppConfig } from './app/create-app';
-export { defaultErrorHandler, HttpError } from './app/error-handler';
+export { createApp, createCore } from './app/create-app';
+export type { AppConfig, AuthAppConfig, CoreInstance, SyncMode } from './app/create-app';
+export { defaultErrorHandler, HttpError, ValidationError } from './app/error-handler';
 
 // Database
 export { createSequelize } from './db/create-sequelize';
 export type { DbConfig } from './db/create-sequelize';
 
+// Field and model vocabulary (owned by @eleansphere/schema, re-exported for convenience)
+export type {
+  ModelConfig,
+  FieldConfig,
+  FieldType,
+  FieldValidation,
+  StringFormat,
+  AccessPolicy,
+  AccessConfig,
+  FilterOperator,
+  QueryConfig,
+  IndexConfig,
+} from './types/model-config';
+export type { ValidationIssue, ValidationIssueCode, ValidationMode } from '@eleansphere/schema';
+export { validateFields } from '@eleansphere/schema';
+
 // Types
 export { CoreEntity } from './types/core-entity';
-export type { CrudRouterOptions } from './types/crud-router';
+export type { CrudRouterOptions, CrudHook, CrudHooks } from './types/crud-router';
 export type { ProjectPlugin } from './types/project-plugin';
-export type { ModelConfig, FieldConfig, FieldType, FieldValidation } from './types/model-config';
 // Side-effect-only for consumers too: this is what makes `req.user` typed on their own Express
 // `Request`, not just be-core's internals — see the file for why the import (not just the type)
 // matters.
 export type { AuthenticatedUser } from './types/express-request';
 import './types/express-request';
 
+// Access
+export { evaluateAccess } from './access/access-rules';
+export type {
+  AccessRule,
+  AccessRules,
+  AccessDecider,
+  AccessGrant,
+  CrudOperation,
+} from './access/access-rules';
+
 // Utils
 export { createCrudRouter } from './utils/create-crud-router';
 export { generateId } from './utils/generate-id';
-export { initModelsFromConfigs, mountModelRoutes } from './utils/init-models-from-configs';
+export {
+  initModelsFromConfigs,
+  mountModelRoutes,
+  resolveModelAccess,
+  DEFAULT_ACCESS_POLICY,
+} from './utils/init-models-from-configs';
+export type {
+  ModelRouteOverrides,
+  MountModelRoutesOptions,
+} from './utils/init-models-from-configs';
+export { parseListQuery } from './utils/list-query';
+export type { ListQuery } from './utils/list-query';
+export { combineWhere } from './utils/combine-where';
 
 // Auth
 export { createAuthRouter } from './auth/create-auth-router';
 export type { AuthConfig, RegisterConfig, PasswordResetConfig } from './auth/create-auth-router';
-export { createVerifyToken, createExtractUser } from './auth/create-verify-token';
+export {
+  createVerifyToken,
+  createExtractUser,
+  createOptionalUser,
+  createRequireRole,
+} from './auth/create-verify-token';
 
 // Files — detached file service (bytes in S3-compatible storage, metadata in Postgres)
 export { createFileServiceRouter } from './files/create-file-service-router';

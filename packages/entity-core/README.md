@@ -1,15 +1,12 @@
 # @eleansphere/entity-core
 
-The client-side toolkit for [be-core](https://github.com/Eleansphere/be-core) apps.
+The client-side toolkit for [be-core](../be-core) apps. Define an entity **once** and derive its
+server model config, its DTO types, a typed HTTP service and a form schema from that one
+definition, so the database, the API, the frontend service and its forms can't drift apart.
 
-Define an entity **once** and derive its be-core model config, its DTO classes, and its HTTP
-service from that single definition — so the backend model, the DTOs, and the frontend service can
-never drift apart. Plus the HTTP layer those services are built on (`ApiClient`, the abstract
-service classes, `AuthService`) and the wiring helpers (`createServiceContainer`, `toModelConfigs`).
-
-> **2.0.0** absorbed `@eleansphere/service-core` (now a deleted repo) — `ApiClient`, the abstract
-> service classes, `AuthService`, `PaginatedResponse`, `FileDto`, etc. all come from here now.
-> `extend` is fully typed.
+Runs in the browser and in Node, ships ESM and CJS, and depends only on
+[`@eleansphere/schema`](../schema) (not on be-core, so a frontend doesn't install Express or
+Sequelize).
 
 ## Installation
 
@@ -19,213 +16,195 @@ service classes, `AuthService`) and the wiring helpers (`createServiceContainer`
 ```
 
 ```bash
-npm install @eleansphere/entity-core
+pnpm add @eleansphere/entity-core
 ```
 
-## Usage
+## defineEntity
 
 ```typescript
 import { defineEntity } from '@eleansphere/entity-core';
 
 export const bookEntity = defineEntity({
   name: 'book',
-  prefix: 'b',
-  basePath: '/api/books',
+  prefix: 'bk_',
   userScoped: true,
   fields: {
     title: { type: 'STRING', required: true, maxLength: 200 },
     author: { type: 'STRING', maxLength: 100 },
-    isAvailable: { type: 'BOOLEAN', required: true },
-    ownerId: { type: 'STRING', required: true },
+    readingStatus: { type: 'ENUM', values: ['none', 'want', 'reading', 'read'], default: 'none' },
+    rating: { type: 'INTEGER', min: 1, max: 5 },
+    finishedAt: { type: 'DATEONLY' },
+    lastReminderSentAt: { type: 'DATE', readOnly: true },
   },
+  query: {
+    filter: { readingStatus: 'in', rating: 'range' },
+    sort: ['title', 'rating', 'createdAt'],
+    defaultSort: '-createdAt',
+    search: ['title', 'author'],
+  },
+  indexes: [{ fields: ['ownerId', 'title'] }],
 });
 ```
 
-This gives you three things from one definition:
+No `as const` needed: literals are inferred. One definition gives you:
 
-```typescript
-bookEntity.config   // ModelConfig — pass to be-core's createApp({ modelConfigs: [...] })
-bookEntity.Dto      // read DTO class — new bookEntity.Dto(data)
-bookEntity.Service   // service class — register it in createServiceContainer({ books: bookEntity, ... })
-```
-
-`InstanceType<typeof bookEntity.Service>` is the CRUD surface — `getAll` returns
-`Promise<PaginatedResponse<InferDto<…>>>`, plus `getById` / `create` / `update` / `delete` — and, for an
-`extend`-ed entity, whatever the `extend` block added.
+| | |
+|---|---|
+| `bookEntity.config` | be-core `ModelConfig`, via `toModelConfigs(allEntities)` into `createCore` |
+| `bookEntity.fields` | the field definitions, e.g. for `toStandardSchema` |
+| `bookEntity.Dto`, `.CreateDto`, `.UpdateDto` | DTO classes; `InstanceType<typeof bookEntity.Dto>` is the row type |
+| `bookEntity.Service` | typed HTTP service, registered with `createServiceContainer` |
 
 ### Options
 
-| Option        | Type                | Description                                                          |
-| ------------- | ------------------- | ---------------------------------------------------------------------- |
-| `name`        | `string`             | Entity name — Sequelize model name, default route path base           |
-| `prefix`      | `string`             | ID prefix (`'b'` → `'b_abc123...'`)                                   |
-| `basePath`    | `string`             | Frontend HTTP base path (default `/api/{name}s`)                     |
-| `routePath`   | `string`             | Override backend route path if it differs from `basePath`             |
-| `userScoped`  | `boolean`            | Backend only — be-core stamps/enforces `ownerId` (entity needs an `ownerId` field) |
-| `activeRange` | `{ from, to }`       | Backend mounts a public `GET {basePath}/active` route (be-core `ModelConfig.activeRange`) |
-| `fields`      | `Fields`             | Field definitions — see below                                         |
-| `extend`      | `(Base) => class`    | Add custom methods to the generated service class (see below)         |
+| Option | Description |
+|---|---|
+| `name`, `prefix` | Model name and id prefix (include the separator: `'bk_'`) |
+| `basePath` | Service base path, default `/api/{name}s`; also the server route unless `routePath` differs |
+| `routePath` | Server route path, when different from `basePath` |
+| `userScoped` | Rows belong to the signed-in user: owner access, an `ownerId` column, `ownerId` in the DTO |
+| `access` | `{ read, write }` policies: `public`, `auth` (default), `owner`, `admin`, `{ roles }` |
+| `query` | List filters, sort and search the API accepts; column names are type-checked, and it types `getAll` |
+| `indexes` | Indexes, including partial ones (`where: { returnedAt: null }`) |
+| `activeRange` | `{ from, to }` fields: public `GET {basePath}/active` |
+| `fields` | Field definitions, see below |
+| `extend` | `(Base) => class extends Base { … }` to add service methods |
 
-**Field types:** `STRING`, `TEXT`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `BLOB`. `FieldDef` is built on
-be-core's own `FieldType` and `FieldValidation` (be-core is a dependency of this package), so every be-core
-field validation — `unique`, `minLength`, `maxLength`, `min`, `max`, `format: 'email' | 'url'` — is
-**type-checked here**, not waved through an untyped index signature. A typo in a validation key, or a value of
-the wrong type, is a compile error. If be-core adds a field type, a compile-time guard in `entity-factory.ts`
-forces `FieldTypeMap` to be updated before the new type can be used.
+### Fields and DTO types
 
-### `writeOnly` — the one flag that used to be two
+Types: `STRING`, `TEXT`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE` (ISO string), `DATEONLY`
+(`YYYY-MM-DD`), `ENUM` (needs `values`, typed as their union), `BLOB`. Validations: `required`
+(literal `true`), `unique`, `minLength`, `maxLength`, `min`, `max`, `format: 'email' | 'url'`,
+`default`.
 
-```typescript
-password: { type: 'STRING', required: true, minLength: 6, writeOnly: true },
-```
+| Flag | Read DTO | Create / update DTO | Server |
+|---|---|---|---|
+| `writeOnly: true` | excluded (also stripped by `new Dto(data)`) | included | stripped from responses |
+| `readOnly: true` | included | excluded | stripped from request bodies |
+| `hash: 'bcrypt'` | | | hashed before saving |
 
-`writeOnly: true` on a field does **all** of the following, from one declaration:
+- **Read DTO**: `id`, `createdAt`, `updatedAt` always; `ownerId` for `userScoped`; required fields and
+  fields with a default are non-null, the rest `T | null`.
+- **Create DTO**: required fields without a default are mandatory, the rest optional (non-required
+  ones may be `null`).
+- **Update DTO**: everything optional; `update()` sends `PATCH`, so only what you send changes.
 
-1. Excluded from the read `Dto` TypeScript type
-2. Deleted at runtime from any `new entity.Dto(data)` instance — even if the raw data passed in
-   happens to contain it, it won't survive construction
-3. Translated into be-core's `sensitive: true` on the emitted `ModelConfig`, so the field is
-   stripped from the actual JSON response the backend sends
-
-Earlier, (1) was `writeOnly` and (3) was a separate `sensitive` flag on be-core's own config — nothing connected
-them, so it was possible to set one and forget the other (a `password` field would look excluded on the frontend
-type while the backend was still returning the hash in every response). `writeOnly` is now the only flag you need.
-
-Still present in `CreateDto`/`UpdateDto` — a password has to be submittable on create/update, it's just never sent
-back.
-
-### `hash` — bcrypt on create/update
+## Typed services
 
 ```typescript
-password: { type: 'STRING', required: true, minLength: 6, writeOnly: true, hash: 'bcrypt' },
+const books = services.books; // from createServiceContainer
+
+await books.getAll({
+  filter: { readingStatus: ['reading', 'read'], rating: { gte: 4 } },
+  sort: ['-rating', 'title'],
+  q: 'dune',
+  page: 1,
+  limit: 20,
+});
+// → PaginatedResponse<Book>: { data, total, page, limit }
+
+await books.create({ title: 'Dune' });
+await books.update(id, { rating: 5 });
 ```
 
-`hash: 'bcrypt'` hashes the field server-side (be-core) on create/update, skipping values that
-already look like a bcrypt hash — so resubmitting an unchanged password on update doesn't hash it
-twice. Typically paired with `writeOnly: true`. `minLength`/`maxLength` etc. validate the plaintext
-value before it's hashed.
+Filters and sort columns are exactly what the entity's `query` declares: an undeclared filter, an
+unknown ENUM value or an unsortable column is a compile error. Filter values: a value (`eq`), a
+list (`in`), `{ gte, lte, gt, lt }` (`range`), `{ isNull: boolean }` (`isNull`).
+`toListQueryParams` does the serialization, for hand-written services.
 
-### `userScoped` entities
+### Extending a service
 
-All routes require a JWT, and be-core stamps `ownerId` from the token on create and enforces it on
-`GET`/`PUT`/`DELETE /:id`. The entity must define an `ownerId` field. Purely a backend concern —
-the generated client service is a plain CRUD service.
-
-### Extending the generated service
-
-`Base` is a real, `new`-able class; `this` has the CRUD methods and the HTTP helpers, all typed:
+`Base` is a real class; `this` has the CRUD methods and the HTTP helpers (`get`, `post`, `put`,
+`patch`, `httpDelete`, `basePath`), all typed:
 
 ```typescript
 export const loanEntity = defineEntity({
   name: 'loan',
-  prefix: 'l',
+  prefix: 'ln_',
   userScoped: true,
   fields: { /* ... */ },
   extend: (Base) =>
     class extends Base {
-      getByBook(bookId: string) {
-        return this.get<LoanDto[]>(`${this.basePath}?bookId=${bookId}`);
+      markReturned(id: string) {
+        return this.post<LoanDto>(`${this.basePath}/${id}/return`, {});
       }
     },
 });
 ```
 
-`loanEntity.Service`'s instance type is now `CrudServiceInstance & { getByBook(...) }`, so
-`getServices().loans.getByBook(...)` **and** `.getAll()` are both typed. The older
-`class extends (Base as any)` + `(this as any)` still compiles.
+### withImages
 
-### `withImages` — the client side of be-core's detached file service
+`extend: (Base) => class extends withImages(Base, 'Product') {}` adds `listImages(refId)`,
+`uploadImage(refId, file, sortOrder?)` and `deleteImage(fileId)` over be-core's file service
+(`role: 'image'`). For other roles use `FilesClient` directly: `list`, `upload`, `remove`.
 
-An entity whose records have attached images (product photos, gallery items, …) needs
-`listImages`/`uploadImage`/`deleteImage` against be-core's generic `/api/files` endpoint
-(`refType`/`refId`/`role: 'image'`). Wrap `extend`'s `Base` with `withImages` instead of
-hand-writing the same three methods per entity:
+## Forms: toStandardSchema
 
-```typescript
-import { defineEntity, withImages } from '@eleansphere/entity-core';
+```vue
+<script setup lang="ts">
+import { toStandardSchema } from '@eleansphere/entity-core';
 
-export const productEntity = defineEntity({
-  name: 'Product',
-  prefix: 'prod',
-  fields: { /* ... */ },
-  extend: (Base) =>
-    class extends withImages(Base, 'Product') {
-      // entity-specific overrides/additions still go here
-    },
+const schema = toStandardSchema(loanEntity.fields, 'create', {
+  formatMessage: (issue) => t(`validation.${issue.code}`, issue.params ?? {}),
+  refine: (loan) =>
+    loan.dueAt && loan.dueAt < loan.lentAt ? [{ path: 'dueAt', code: 'min' }] : [],
 });
+</script>
+
+<template>
+  <UForm :schema="schema" :state="state" @submit="save">…</UForm>
+</template>
 ```
 
-`productEntity.Service`'s instances get `listImages(refId)`, `uploadImage(refId, file, sortOrder?)`,
-and `deleteImage(fileId)` — the backend side is be-core's `attachFiles` in the model config's
-`enrich` option. `withImages` is a thin `role: 'image'` convenience over `FilesClient`.
+A [Standard Schema](https://standardschema.dev) running the same `validateFields` as the server:
+`'create'` checks every field, `'patch'` only those present. Each issue has `path`, `message`,
+`code` and `params`. `refine` runs once the fields are valid on their own.
 
 ## HTTP layer
 
-Split by concern instead of one class doing everything:
-
 | Class | Role |
-| --- | --- |
-| `HttpTransport` | fetch + auth headers + turning a non-2xx response into an `ApiError`. Base class only — extend it to build a new kind of client. |
-| `ApiClient` | the CRUD JSON verbs (`get`/`post`/`put`/`httpDelete`) every generated entity service and `AuthService` extend. |
-| `FilesClient` | client for be-core's detached file service (`/api/files`): `list(params)` / `upload(fields)` / `remove(fileId)`. Not part of the generated-service chain — files aren't a CRUD resource. Construct one directly for anything `withImages` doesn't cover (an arbitrary `role`, no fixed `refType`, …). |
+|---|---|
+| `HttpTransport` | `fetch`, auth header, non-2xx → `ApiError`; base for new clients |
+| `ApiClient` | `get` / `post` / `put` / `patch` / `httpDelete`; base of every service |
+| `CrudServiceBase` | `getAll` / `getById` / `create` / `update` / `delete` for hand-written services |
+| `AuthService` | `login` (→ `{ token, id, email, role }`), `me`, `forgotPassword`, `resetPassword` |
+| `FilesClient` | be-core's `/api/files` |
 
-### `ApiError`
-
-Thrown for any non-2xx response — `status`, the parsed `body`, and `isAuthError`/`isNotFound`
-getters, instead of a bare `Error` with a message string to match against:
+`ApiError` carries `status`, the parsed `body`, `isAuthError` (401/403), `isNotFound`, `detail`
+(the server's message) and `issues` (validation issues, empty otherwise):
 
 ```typescript
 try {
-  await productEntity.Service.getById(id);
+  await books.create(form);
 } catch (err) {
-  if (err instanceof ApiError && err.isAuthError) {
-    logout();
-  }
+  if (err instanceof ApiError && err.issues.length) showFieldErrors(err.issues);
 }
 ```
 
 ## Wiring helpers
 
-Keep the entity list in one registry and derive both sides from it.
-
-### `createServiceContainer` — frontend
-
 ```typescript
-import { createServiceContainer, AuthService } from '@eleansphere/entity-core';
-
+// frontend
 export const services = createServiceContainer(
   { auth: AuthService, books: bookEntity, loans: loanEntity },
-  import.meta.env.VITE_BACKEND_URL,
-  () => localStorage.getItem('token'),
+  import.meta.env.VITE_API_URL,
+  () => session.token
 );
 
-services.books.getAll();
+// backend
+const core = await createCore({ modelConfigs: toModelConfigs(allEntities, { custom: ['user'] }), … });
 ```
 
-Each registry value is either a service class (instantiated as `new Class(baseUrl, tokenProvider)`)
-or an entity object (its `.Service` is instantiated). Replaces hand-written
-`AbstractServiceContainer` subclasses where every `this.x = new X(...this.args())` line was a place
-to forget an entity.
-
-### `toModelConfigs` — backend
-
-```typescript
-import { createApp } from '@eleansphere/be-core';
-import { toModelConfigs } from '@eleansphere/entity-core';
-import { allEntities } from '@my-project/service';
-
-createApp({
-  modelConfigs: toModelConfigs(allEntities, { custom: ['Product', 'Order'] }),
-  // ...
-});
-```
-
-`custom` names are registered with `skipAutoRoutes: true` (a plugin serves those paths). Accepts a
-record or an array of entity objects.
+`createServiceContainer` instantiates each service class or entity `.Service` with the same base
+URL and token provider. `toModelConfigs` turns an entity registry into `ModelConfig[]`; `custom`
+names get `skipAutoRoutes`.
 
 ## Development
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the build/changeset/`npm link` workflow.
+In the [core monorepo](../../README.md): `corepack pnpm --filter @eleansphere/entity-core build`,
+`… test`, `… typecheck` (type-level tests use `expectTypeOf` and `@ts-expect-error`, so the
+typecheck is part of the test suite). Releases go through changesets; see
+[CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## License
 

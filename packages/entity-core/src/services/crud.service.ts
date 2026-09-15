@@ -1,23 +1,21 @@
 import { ApiClient } from '../http/api-client';
-
-export interface PaginationParams {
-  page?: number;
-  limit?: number;
-}
-
-export interface PaginatedResponse<T> {
-  data: T[];
-  total: number;
-  page?: number;
-  limit?: number;
-}
+import { toListQueryParams } from './list-request';
+import type { ListRequest, PaginatedResponse } from './list-request';
 
 /** Base for a hand-written CRUD service. `defineEntity`'s generated services extend this too. */
-export abstract class CrudServiceBase<Dto, Create, Update> extends ApiClient {
+export abstract class CrudServiceBase<
+  Dto,
+  Create,
+  Update,
+  List extends ListRequest = ListRequest,
+> extends ApiClient {
   protected abstract readonly basePath: string;
 
-  getAll(params?: PaginationParams): Promise<PaginatedResponse<Dto>> {
-    return this.get<PaginatedResponse<Dto>, PaginationParams>(this.basePath, params);
+  getAll(params?: List): Promise<PaginatedResponse<Dto>> {
+    return this.get<PaginatedResponse<Dto>, Record<string, string>>(
+      this.basePath,
+      toListQueryParams(params)
+    );
   }
 
   getById(id: string): Promise<Dto> {
@@ -28,8 +26,9 @@ export abstract class CrudServiceBase<Dto, Create, Update> extends ApiClient {
     return this.post<Dto>(this.basePath, data);
   }
 
+  /** Partial update (PATCH): only the fields sent change. */
   update(id: string, data: Update): Promise<Dto> {
-    return this.put<Dto>(`${this.basePath}/${id}`, data);
+    return this.patch<Dto>(`${this.basePath}/${id}`, data);
   }
 
   delete(id: string): Promise<void> {

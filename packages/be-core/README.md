@@ -1,488 +1,243 @@
 # @eleansphere/be-core
 
-A reusable backend core library for Express.js + Sequelize applications. Eliminates boilerplate by providing factory functions for CRUD operations, authentication, model management, and file uploads.
+Express + Sequelize (Postgres) backend framework. Declare models once and get tables, validated
+CRUD routes with access control, list queries, JWT auth, an S3-compatible file service and email,
+without writing the boilerplate per project.
 
-## Table of Contents
+The field vocabulary (`FieldType`, `ModelConfig`, `validateFields`, …) lives in
+[`@eleansphere/schema`](../schema), shared with the browser through
+[`@eleansphere/entity-core`](../entity-core).
+
+## Contents
 
 - [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-  - [AppConfig](#appconfig)
-  - [ModelConfig](#modelconfig)
-  - [Plugins](#plugins)
-- [API](#api)
-  - [createApp](#createapp)
-  - [createSequelize](#createsequelize)
-  - [createCrudRouter](#createcrudrouter)
-  - [createAuthRouter](#createauthrouter)
-  - [createVerifyToken](#createverifytoken)
-  - [createExtractUser](#createextractuser)
-  - [File service (AppConfig.storage)](#file-service-appconfigstorage)
-  - [generateId](#generateid)
-  - [defaultErrorHandler](#defaulterrorhandler)
-- [Types](#types)
+- [Quick start](#quick-start)
+- [AppConfig](#appconfig)
+- [Models](#models)
+  - [Fields](#fields)
+  - [Access](#access)
+  - [List queries](#list-queries)
+  - [Indexes](#indexes)
+  - [Server-side route overrides](#server-side-route-overrides)
+  - [`skipAutoRoutes` and `activeRange`](#skipautoroutes-and-activerange)
+- [Plugins](#plugins)
+- [createCrudRouter](#createcrudrouter)
+- [Auth](#auth)
+- [File service](#file-service)
+- [Errors](#errors)
+- [Utilities](#utilities)
 - [Development](#development)
-
----
 
 ## Installation
 
-The library is published to GitHub Packages. Add an `.npmrc` file to your project:
+Published to GitHub Packages. Add an `.npmrc`:
 
 ```
 @eleansphere:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
 ```
 
-Then install:
-
 ```bash
-npm install @eleansphere/be-core
+pnpm add @eleansphere/be-core
 ```
 
----
-
-## Quick Start
+## Quick start
 
 ```typescript
-import { createApp } from '@eleansphere/be-core';
+import { createCore } from '@eleansphere/be-core';
 
-createApp({
-  port: 3000,
-  db: {
-    host: 'localhost',
-    port: 5432,
-    database: 'mydb',
-    username: 'postgres',
-    password: 'secret',
-  },
-  jwtSecret: 'my-jwt-secret',
+const core = await createCore({
+  databaseUrl: process.env.DATABASE_URL!,
+  jwtSecret: process.env.JWT_SECRET!,
   modelConfigs: [
     {
-      name: 'Product',
-      prefix: 'prod',
-      fields: [
-        { name: 'name', type: 'STRING', required: true },
-        { name: 'price', type: 'FLOAT', required: true },
-        { name: 'description', type: 'TEXT' },
-      ],
+      name: 'book',
+      prefix: 'bk_',
+      userScoped: true,
+      fields: {
+        title: { type: 'STRING', required: true, maxLength: 200 },
+        readingStatus: { type: 'ENUM', values: ['want', 'reading', 'read'], default: 'want' },
+        finishedAt: { type: 'DATEONLY' },
+      },
+      query: { filter: { readingStatus: 'in' }, sort: ['title'], search: ['title'] },
     },
   ],
+  auth: { modelName: 'user', tokenClaims: ['role'] },
 });
+
+await core.listen(); // port: config.port ?? 3000
 ```
 
-This starts an Express server with auto-generated CRUD endpoints at `/api/products`.
+That creates the `books` table (with an indexed `ownerId`) and mounts `/api/books`: only signed-in
+users, each seeing their own rows, with `?readingStatus=read,reading&sort=title&q=dune&page=2`.
 
----
+`createCore` returns `{ app, sequelize, models, emailService, storage, listen(), close() }` and
+awaits the schema sync but never listens, so the same setup serves a scheduled job (use `models`,
+then `close()`) and tests (`supertest(core.app)`). `createApp(config)` is the older one-call form:
+it syncs, then listens, and returns the Express app immediately (startup errors are only logged).
 
-## Configuration
+## AppConfig
 
-### AppConfig
+| Field | Type | Description |
+|---|---|---|
+| `databaseUrl` | `string` | Postgres connection string |
+| `schema` | `string` | Postgres schema (sets `search_path`) |
+| `dbSsl` | `boolean` | Connect over SSL. Default `true`; set `false` for a local database |
+| `jwtSecret` | `string` | Signs and verifies JWTs |
+| `port` | `number` | Default for `listen()`. Default `3000` |
+| `modelConfigs` | `ModelConfig[]` | Declarative models, see [Models](#models) |
+| `routes` | `Record<string, ModelRouteOverrides>` | Server-side additions to auto-mounted routes, see [overrides](#server-side-route-overrides) |
+| `syncMode` | `'create' \| 'none'` | `create` (default) creates missing tables and indexes without altering existing ones |
+| `plugins` | `ProjectPlugin[]` | Custom models and routes |
+| `auth` | `AuthAppConfig` | Mounts `/api/auth`, see [Auth](#auth) |
+| `storage` | `StorageConfig` | Enables the [file service](#file-service) |
+| `email` | `EmailConfig` | SMTP settings for `emailService` |
+| `cors` | `CorsOptions` | Passed to `cors` |
+| `middleware` | `RequestHandler[]` | Registered before every route |
+| `errorHandler` | `ErrorRequestHandler` | Replaces `defaultErrorHandler` |
 
-| Field            | Type                    | Description                                                            |
-|------------------|-------------------------|------------------------------------------------------------------------|
-| `port`           | `number`                | Port the server listens on                                             |
-| `databaseUrl`    | `string`                | PostgreSQL connection string                                           |
-| `schema`         | `string`                | Optional database schema                                               |
-| `jwtSecret`      | `string`                | Secret key for signing JWT tokens                                      |
-| `modelConfigs`   | `ModelConfig[]`         | Declarative database model configurations                              |
-| `plugins`        | `ProjectPlugin[]`       | Plugins with custom models and routes                                  |
-| `cors`           | `CorsOptions`           | CORS configuration passed to the `cors` package                        |
-| `middleware`     | `RequestHandler[]`      | Global middleware registered before all routes                         |
-| `auth`           | `{ modelName, expiresIn? }` | Enables auth routes; `modelName` is the registered user model name |
-| `storage`        | `StorageConfig`         | Enables the detached file service — see [File service](#file-service-appconfigstorage) |
-| `errorHandler`   | `ErrorRequestHandler`   | Custom error handler — overrides the built-in `defaultErrorHandler`   |
+## Models
 
-### ModelConfig
+A `ModelConfig` becomes a Sequelize model (with `id`, `createdAt`, `updatedAt`) and, unless
+`skipAutoRoutes` is set, a CRUD router at `routePath` (default `/api/${name}s`):
 
-Models can be defined declaratively as a JSON configuration. The library automatically creates a Sequelize model and mounts CRUD routes from it.
+| Method | Path | |
+|---|---|---|
+| `POST` | `/` | Create. `201` with the row |
+| `GET` | `/` | List. `{ data, total }`, or `{ data, total, page, limit }` with a `query` config |
+| `GET` | `/:id` | One row |
+| `PATCH`, `PUT` | `/:id` | Partial update: only the fields sent are validated and changed |
+| `DELETE` | `/:id` | `204` |
+
+Request bodies never set `id`, `createdAt`, `updatedAt`, `readOnly` fields or (under an owner
+policy) `ownerId`; they're stripped before validation.
+
+### Fields
+
+| Type | JSON value | Validations |
+|---|---|---|
+| `STRING`, `TEXT` | string | `minLength`, `maxLength`, `format: 'email' \| 'url'` (http/https) |
+| `INTEGER`, `FLOAT` | number | `min`, `max` |
+| `BOOLEAN` | boolean | |
+| `DATE` | ISO timestamp | |
+| `DATEONLY` | `YYYY-MM-DD` | |
+| `ENUM` | one of `values` | stored as VARCHAR, so adding a value needs no migration |
+| `BLOB` | binary | |
+
+| Flag | Effect |
+|---|---|
+| `required` | Must be present on create (unless it has a `default`), can't be cleared |
+| `unique` | Unique constraint; a violation is a `409` with a `unique` issue |
+| `default` | Column default |
+| `readOnly` | Server-managed: stripped from request bodies, returned in responses |
+| `sensitive` | Stripped from responses (entity-core's `writeOnly` sets it) |
+| `hash: 'bcrypt'` | Hashed before saving; values already hashed are left alone |
+
+Validation runs [`validateFields`](../schema#validatefields) and answers
+`400 { issues: [{ path, code, params }] }`.
+
+### Access
 
 ```typescript
-const productConfig: ModelConfig = {
-  name: 'Product',        // Model name (PascalCase)
-  prefix: 'prod',         // Prefix for ID generation (e.g. "prod_abc123...")
-  routePath: '/products', // Optional custom route path (default: /api/{name}s)
-  logging: true,          // Enable action logging (optional)
-  userScoped: true,       // Scope all routes to the authenticated user (optional, see below)
-  fields: [
-    {
-      name: 'title',
-      type: 'STRING',      // STRING | TEXT | INTEGER | FLOAT | BOOLEAN | DATE | BLOB
-      required: true,
-      unique: true,
-      minLength: 3,
-      maxLength: 100,
-    },
-    {
-      name: 'price',
-      type: 'FLOAT',
-      min: 0,
-    },
-    {
-      name: 'email',
-      type: 'STRING',
-      email: true,         // Validate email format
-    },
-  ],
-};
+access: { read: 'public', write: 'admin' }
 ```
 
-**User-scoped models:**
+| Policy | Allows |
+|---|---|
+| `public` | anyone |
+| `auth` | any signed-in user (**default** for every operation left out) |
+| `owner` | signed-in user, only rows whose `ownerId` is theirs; creates are stamped with their id |
+| `admin` | shorthand for `{ roles: ['admin'] }` |
+| `{ roles: [...] }` | signed-in user whose token `role` is listed; needs `auth.tokenClaims: ['role']` (startup fails otherwise) |
 
-Setting `userScoped: true` on a `ModelConfig` scopes every auto-generated route to the authenticated user:
+`userScoped: true` means `owner` for both and adds the `ownerId` column. A caller outside a row's
+scope gets `404`, not `403`, so ids don't leak. Tokens are read with `createOptionalUser`: an
+anonymous request reaches `public` operations, an invalid token is always `401`.
 
-1. All routes for that model require a valid JWT (`Authorization: Bearer <token>`).
-2. `POST /` sets `ownerId` from the token — any `ownerId` in the request body is ignored.
-3. `GET /` returns only records whose `ownerId` matches the caller.
-4. `GET /:id`, `PUT /:id`, `DELETE /:id` return `404` unless the caller owns the record — so ids from other users can't be read, modified, or deleted, and their existence isn't leaked.
-5. `PUT /:id` can't reassign `ownerId` to another user (it's pinned to the current owner).
-
-The model must have an `ownerId` field. The client never needs to send `ownerId` — the server owns it — but sending it is harmless (it's overwritten).
+Rules a literal can't express (e.g. "owner, or anyone when the row is public") are functions,
+passed server-side through [`routes`](#server-side-route-overrides):
 
 ```typescript
-const noteConfig: ModelConfig = {
-  name: 'note',
-  prefix: 'n',
-  userScoped: true,
-  fields: {
-    content: { type: 'TEXT', required: true },
-    ownerId: { type: 'STRING', required: true },
+routes: {
+  book: {
+    access: {
+      read: (req) => ({ [Op.or]: [{ ownerId: req.user?.id ?? null }, { visibility: 'public' }] }),
+    },
   },
-};
-```
-
-**`skipAutoRoutes`:**
-
-Set `skipAutoRoutes: true` when a model needs custom plugin routes instead of auto-generated CRUD. The Sequelize model is still initialized and available via `models['name']` in plugin `registerRoutes`, but no routes are mounted automatically.
-
-```typescript
-// index.ts — model is registered but routes come from plugin.ts
-modelConfigs: [
-  { ...userEntity.config, skipAutoRoutes: true },
-]
-
-// plugin.ts — custom routes with bcrypt hooks
-registerRoutes(app, _sequelize, models) {
-  const extractUser = createExtractUser(process.env.JWT_SECRET!);
-  app.use('/api/users', extractUser, createCrudRouter({ model: models['user'], ... }));
 }
 ```
 
-**Available field validations:**
+A function returns `true` (allow), `false` (deny: `401` anonymous, `403` signed in) or a
+where-clause that limits the rows.
 
-| Validation  | Type      | Description                    |
-|-------------|-----------|--------------------------------|
-| `required`  | `boolean` | Field is required              |
-| `unique`    | `boolean` | Value must be unique           |
-| `minLength` | `number`  | Minimum string length          |
-| `maxLength` | `number`  | Maximum string length          |
-| `min`       | `number`  | Minimum numeric value          |
-| `max`       | `number`  | Maximum numeric value          |
-| `email`     | `boolean` | Validate email format          |
-| `url`       | `boolean` | Validate URL format            |
-| `hash`      | `'bcrypt'`| Hash on create/update (skips values already looking like a bcrypt hash) |
-
-**`activeRange`:**
-
-Mounts a public (no auth) `GET {routePath}/active` route returning records where `from <= now <= to`, ordered by `from` ascending. Mounted even when `skipAutoRoutes` is set — that flag only skips the CRUD routes.
+### List queries
 
 ```typescript
-const eventConfig: ModelConfig = {
-  name: 'event',
-  prefix: 'ev',
-  activeRange: { from: 'startsAt', to: 'endsAt' },
-  fields: {
-    startsAt: { type: 'DATE', required: true },
-    endsAt: { type: 'DATE', required: true },
-  },
-};
-```
-
-### Plugins
-
-Plugins allow you to register custom Sequelize models and Express routes:
-
-```typescript
-import { ProjectPlugin } from '@eleansphere/be-core';
-import { Express } from 'express';
-import { Sequelize } from 'sequelize';
-
-const myPlugin: ProjectPlugin = {
-  registerModels(sequelize: Sequelize) {
-    // Initialize your custom Sequelize models
-    MyModel.init({ ... }, { sequelize });
-    return { MyModel };
-  },
-
-  registerRoutes(app: Express, models: Record<string, any>) {
-    app.get('/api/custom', (req, res) => {
-      res.json({ ok: true });
-    });
-  },
-};
-```
-
----
-
-## API
-
-### createApp
-
-Creates and starts an Express application with all configured routes and database connection.
-
-```typescript
-createApp(config: AppConfig): void
-```
-
-Automatically handles:
-- PostgreSQL connection via Sequelize
-- JSON body parsing and CORS
-- Database model synchronization
-- Mounting CRUD routes for all `modelConfigs`
-- Mounting auth routes (`/api/auth/login`, `/api/auth/me`) when `auth` is configured
-- Plugin registration
-- Centralized error handling via `defaultErrorHandler` (registered last, after all plugins)
-
----
-
-### createSequelize
-
-Creates a Sequelize instance for PostgreSQL.
-
-```typescript
-createSequelize(config: DbConfig): Sequelize
-```
-
-```typescript
-const sequelize = createSequelize({
-  host: 'localhost',
-  port: 5432,
-  database: 'mydb',
-  username: 'postgres',
-  password: 'secret',
-});
-```
-
----
-
-### createCrudRouter
-
-Generates an Express router with a full set of CRUD endpoints for a given Sequelize model.
-
-```typescript
-createCrudRouter(options: CrudRouterOptions): Router
-```
-
-**Generated endpoints:**
-
-| Method   | Path   | Description          |
-|----------|--------|----------------------|
-| `POST`   | `/`    | Create a record      |
-| `GET`    | `/`    | Get records — returns `{ data: T[], total: number }`. Supports `?page=1&limit=20` for server-side pagination. |
-| `GET`    | `/:id` | Get a record by ID   |
-| `PUT`    | `/:id` | Update a record      |
-| `DELETE` | `/:id` | Delete a record      |
-
-**Options (`CrudRouterOptions`):**
-
-```typescript
-createCrudRouter({
-  model: MyModel,
-  middleware: [verifyToken],          // Applied to all five routes
-  protect: [verifyToken],             // Applied only to POST/PUT/DELETE — GET stays public
-  log: true,                          // Log actions to console
-  hashFields: ['password'],           // bcrypt-hash these fields on create/update
-  buildWhere: (req) => ({             // Extra `where` filter for GET (list)
-    category: req.query.category,
-  }),
-  order: [['sortOrder', 'ASC']],      // Sort order for GET (list)
-  enrich: (rows) => attachFiles(...), // Transform fetched row(s) before responding
-  beforeDelete: async (entity) => {   // Runs before the record is destroyed
-    await cleanupRelated(entity);
-  },
-  hooks: {
-    beforeCreate: async (data) => {     // Hook before creating a record
-      return { ...data, slug: slugify(data.name) };
-    },
-    beforeUpdate: async (data) => {     // Hook before updating a record
-      return data;
-    },
-  },
-});
-```
-
----
-
-### createAuthRouter
-
-Creates a router for JWT-based authentication.
-
-```typescript
-createAuthRouter(UserModel: Model, config: AuthConfig): Router
-```
-
-**Endpoints:**
-
-| Method | Path                          | Description                                              |
-|--------|-------------------------------|-----------------------------------------------------------|
-| `POST` | `/api/auth/login`             | Login with email + password, returns JWT                  |
-| `GET`  | `/api/auth/me`                | Get the authenticated user's info (JWT)                    |
-| `POST` | `/api/auth/forgot-password`   | Only mounted when `passwordReset` is set                   |
-| `POST` | `/api/auth/reset-password`    | Only mounted when `passwordReset` is set                   |
-| `POST` | `/api/auth/register`          | Only mounted when `register` is set — self-service sign-up |
-| `POST` | `/api/auth/change-password`   | Only mounted when `changePassword: true` — JWT-protected, current-password-verified |
-
-**`register`/`changePassword` example:**
-
-```typescript
-createAuthRouter(UserModel, {
-  jwtSecret: process.env.JWT_SECRET!,
-  register: {
-    idPrefix: 'u',
-    requiredFields: ['username'],   // beyond email/password, checked for presence
-    extraFields: ['username'],      // copied verbatim from the request body onto the new user
-    defaults: { role: 'user' },     // static fields set on every registered user
-  },
-  changePassword: true,
-});
-```
-
-**Login example:**
-
-```http
-POST /api/auth/login
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "password": "secret123"
+query: {
+  filter: { readingStatus: 'in', rating: 'range', finishedAt: 'isNull', createdAt: 'range' },
+  sort: ['title', 'rating'],
+  defaultSort: '-createdAt',
+  search: ['title', 'author'],
+  defaultLimit: 20,
+  maxLimit: 100,
 }
 ```
 
-```json
-{
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "id": "user_abc123",
-  "email": "user@example.com",
-  "role": "admin"
+| Request | Meaning |
+|---|---|
+| `?readingStatus=read` / `?readingStatus=read,reading` | `eq` / `in` |
+| `?rating[gte]=3&rating[lt]=5` | `range` (`gte`, `lte`, `gt`, `lt`, or a plain value) |
+| `?finishedAt[isNull]=false` | `isNull` |
+| `?sort=-rating,title` | order; `id` is always appended as a tie-breaker |
+| `?q=dune` | case-insensitive substring in any `search` column (`%` and `_` are literal) |
+| `?page=2&limit=20` | pagination; `limit` above `maxLimit` is clamped |
+
+Values are checked against the field types. Undeclared parameters, unsortable columns and values of
+the wrong type are `400`. `id`, `ownerId`, `createdAt` and `updatedAt` can be listed too.
+
+### Indexes
+
+```typescript
+indexes: [{ fields: ['bookId'], unique: true, where: { returnedAt: null } }]
+```
+
+`where` makes the index partial (`null` means `IS NULL`). The example allows one active loan per
+book, enforced by Postgres even under concurrent requests (the second insert is a `409`).
+
+### Server-side route overrides
+
+`AppConfig.routes[modelName]` adds what doesn't belong in a shared model definition: access
+functions, `hooks` (run after field validation), `enrich`, `buildWhere`, `beforeDelete`,
+`middleware`, `protect`.
+
+```typescript
+routes: {
+  book: {
+    enrich: (rows) => attachFiles(models.File, storage, 'book', rows, { role: 'cover', as: 'cover' }),
+    buildWhere: (req) => (req.query.shelfId ? { id: { [Op.in]: booksOnShelf(req) } } : {}),
+  },
 }
 ```
 
----
+### `skipAutoRoutes` and `activeRange`
 
-### createVerifyToken
+`skipAutoRoutes: true` registers the model without CRUD routes, for a plugin to serve.
+`activeRange: { from, to }` mounts a public `GET <routePath>/active` returning rows with
+`from <= now <= to`, even with `skipAutoRoutes`.
 
-Factory function that returns an Express middleware for verifying JWT tokens. Attaches the decoded payload to `req.user`.
-
-```typescript
-createVerifyToken(jwtSecret: string): RequestHandler
-```
+## Plugins
 
 ```typescript
-const verifyToken = createVerifyToken(process.env.JWT_SECRET);
+import type { ProjectPlugin } from '@eleansphere/be-core';
 
-app.get('/api/protected', verifyToken, (req, res) => {
-  res.json({ id: (req as any).user.id });
-});
-```
-
----
-
-### createExtractUser
-
-Alias for `createVerifyToken` — attaches the decoded JWT payload to `req.user`. Safe to use on any route including those with a request body.
-
-Used automatically by `mountModelRoutes` when `userScoped: true`.
-
-```typescript
-createExtractUser(jwtSecret: string): RequestHandler
-```
-
-```typescript
-const extractUser = createExtractUser(process.env.JWT_SECRET);
-
-app.post('/api/my-resource', extractUser, (req, res) => {
-  const userId = (req as any).user.id;
-  // req.body is untouched
-  res.json({ userId, data: req.body });
-});
-```
-
----
-
-### File service (`AppConfig.storage`)
-
-Stores uploaded files in an S3-compatible bucket (Cloudflare R2, AWS S3, MinIO, Backblaze B2) and
-keeps only a `File` metadata row in Postgres. Set `AppConfig.storage` to enable it — be-core then
-registers a `File` model and mounts the file service router (default `/api/files`).
-
-```typescript
-import { createApp, createExtractUser } from '@eleansphere/be-core';
-
-createApp({
-  // ...
-  storage: {
-    s3: {
-      endpoint: process.env.R2_ENDPOINT!,        // https://<accountid>.r2.cloudflarestorage.com
-      bucket: process.env.R2_BUCKET!,
-      accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-      publicBaseUrl: process.env.R2_PUBLIC_BASE_URL, // e.g. https://cdn.example.com — optional
-    },
-    writeMiddleware: [createExtractUser(process.env.JWT_SECRET!)], // guards POST + DELETE
+export const statsPlugin: ProjectPlugin = {
+  registerModels(sequelize) {
+    // optional: models not described by a ModelConfig
   },
-});
-```
-
-**`StorageConfig`:**
-
-| Field                | Type                | Description                                                                 |
-|----------------------|---------------------|-----------------------------------------------------------------------------|
-| `s3`                 | `S3StorageConfig`   | Bucket connection (see below)                                                |
-| `s3.endpoint`        | `string`            | Bucket endpoint URL                                                          |
-| `s3.bucket`          | `string`            | Bucket name                                                                  |
-| `s3.accessKeyId`     | `string`            | Access key                                                                   |
-| `s3.secretAccessKey` | `string`            | Secret key                                                                   |
-| `s3.region`          | `string`            | Defaults to `'auto'` (correct for R2)                                        |
-| `s3.publicBaseUrl`   | `string`            | Public/CDN base URL. When set, public files are served by redirecting here   |
-| `s3.forcePathStyle`  | `boolean`           | Path-style URLs (`endpoint/bucket/key`). Default `false`                     |
-| `writeMiddleware`    | `RequestHandler[]`  | Middleware guarding `POST` and `DELETE`. `GET` stays public                  |
-| `preferRedirect`     | `boolean`           | 302-redirect public files to their CDN URL instead of proxying. Default `true` |
-| `maxFileSize`        | `number`            | Max upload size in bytes. Default 25 MiB                                      |
-| `routePath`          | `string`            | Router mount path. Default `/api/files`                                      |
-
-**Endpoints:**
-
-| Method   | Path                                | Description                                                                          |
-|----------|-------------------------------------|------------------------------------------------------------------------------------|
-| `POST`   | `/api/files`                        | Multipart field `file` + optional `refType`, `refId`, `role`, `visibility`, `sortOrder`. Returns `FileDto` |
-| `GET`    | `/api/files?refType=&refId=&role=`  | List files for an entity — `{ data: FileDto[], total }`                              |
-| `GET`    | `/api/files/:id`                    | 302-redirect to the CDN URL (public files) or proxy-stream with `ETag` / `Range` support |
-| `GET`    | `/api/files/:id/meta`               | The `FileDto` as JSON                                                               |
-| `DELETE` | `/api/files/:id`                    | Remove the bytes and the row                                                        |
-
-**`FileDto`:** `id`, `storageKey`, `originalName`, `mimeType`, `size`, `checksum`, `visibility`
-(`'public' | 'private'`), `ownerId`, `refType`, `refId`, `role`, `sortOrder`, `createdAt`,
-`updatedAt`, and `url` (absolute CDN URL for public files, otherwise the relative `/api/files/:id`).
-
-**Linking files to an entity — `attachFiles`:**
-
-In a plugin's read route, batch-load a model's files (one query, no N+1) and attach them:
-
-```typescript
-import { attachFiles } from '@eleansphere/be-core';
-
-const myPlugin: ProjectPlugin = {
-  registerRoutes(app, _sequelize, models, _email, storage) {
-    app.get('/api/products/:id', async (req, res, next) => {
+  registerRoutes(app, sequelize, models, emailService, storage) {
+    app.get('/api/stats', createVerifyToken(process.env.JWT_SECRET!), async (req, res, next) => {
       try {
-        const product = await models['Product'].findByPk(req.params.id);
-        if (!product) return next(new HttpError(404, 'Product not found'));
-        const [withImages] = await attachFiles(models['File'], storage!, 'Product', [product], {
-          role: 'image',
-          as: 'images',
-        });
-        res.json(withImages); // { ...product, images: FileDto[] }
+        res.json({ books: await models.book.count({ where: { ownerId: req.user!.id } }) });
       } catch (err) {
         next(err);
       }
@@ -491,160 +246,133 @@ const myPlugin: ProjectPlugin = {
 };
 ```
 
-Uploads for that product go straight to the file service:
-`POST /api/files` with form fields `file`, `refType=Product`, `refId=<product id>`, `role=image`.
+Plugin routes are mounted after the model routes, then the error handler.
 
----
+## createCrudRouter
 
-### generateId
-
-Generates a unique prefixed ID.
+The router behind every auto-mounted model, usable directly in a plugin:
 
 ```typescript
-generateId(prefix: string): string
-```
-
-```typescript
-generateId('user');    // => "user_k3j2h9x1m..."
-generateId('product'); // => "product_a8f3n2p7q..."
-```
-
----
-
-### defaultErrorHandler
-
-The built-in Express error middleware registered automatically at the end of `createApp()`, after all plugins. Catches any error passed via `next(err)` from routes or middleware.
-
-```typescript
-import { defaultErrorHandler } from '@eleansphere/be-core';
-```
-
-**Error response format:**
-
-```json
-{ "error": "Not Found", "message": "Resource not found", "statusCode": 404 }
-```
-
-| Field       | Description                                                                    |
-|-------------|--------------------------------------------------------------------------------|
-| `error`     | Short error name. For 5xx: always `"Internal Server Error"`                    |
-| `message`   | Human-readable detail. For 5xx: always `"An unexpected error occurred"`        |
-| `statusCode`| HTTP status code repeated in the body                                          |
-
-5xx errors are logged to `console.error`. 4xx errors are passed through as-is.
-
-**`HttpError` — typed HTTP errors:**
-
-Use `HttpError` to throw errors with an HTTP status code from any route or middleware. The `defaultErrorHandler` picks up `statusCode` automatically and formats the response.
-
-```typescript
-import { HttpError } from '@eleansphere/be-core';
-
-// In a route or plugin:
-throw new HttpError(404, 'Book not found');
-// → { error: 'Not Found', message: 'Book not found', statusCode: 404 }
-
-throw new HttpError(400, 'Title is required');
-// → { error: 'Bad Request', message: 'Title is required', statusCode: 400 }
-```
-
-Supported status codes with automatic error names: `400`, `401`, `403`, `404`, `409`, `422`. Any other code uses `'Error'` as the name.
-
-**Override with a custom error handler:**
-
-```typescript
-createApp({
-  // ...
-  errorHandler: (err, _req, res, _next) => {
-    res.status(err.statusCode ?? 500).json({ myCustomFormat: err.message });
-  },
-});
-```
-
----
-
-## Types
-
-### CoreEntity
-
-Base class for all models. Extends Sequelize `Model` with standard fields:
-
-| Field       | Type     | Description                                  |
-|-------------|----------|----------------------------------------------|
-| `id`        | `string` | Primary key (generated via `generateId`)     |
-| `createdAt` | `Date`   | Record creation timestamp                    |
-| `updatedAt` | `Date`   | Last update timestamp                        |
-
-```typescript
-import { CoreEntity } from '@eleansphere/be-core';
-import { DataTypes } from 'sequelize';
-
-class Product extends CoreEntity {
-  declare name: string;
-  declare price: number;
-}
-
-Product.initModel(
-  {
-    name: { type: DataTypes.STRING },
-    price: { type: DataTypes.FLOAT },
-  },
-  sequelize,
-  'Product',
-  'prod'
+app.use(
+  '/api/products',
+  createCrudRouter({
+    model: models.Product,
+    prefix: 'prod_',
+    generateId,
+    authenticate: createOptionalUser(jwtSecret), // resolves req.user for the access rules
+    access: { read: 'public', write: 'admin' },  // policies or functions
+    query: { filter: { category: 'eq' }, sort: ['price'] },
+    fields: productConfig.fields,                // types for query values
+    readOnlyFields: ['stockReserved'],
+    hashFields: ['password'],
+    hooks: { beforeCreate: async (data, req) => data, beforeUpdate: async (data, req) => data },
+    buildWhere: (req) => ({ active: true }),
+    enrich: (rows) => attachFiles(models.File, storage, 'Product', rows, { as: 'images' }),
+    beforeDelete: async (product, req) => cleanUpImages(product),
+  })
 );
 ```
 
-### ProjectPlugin
+Without `access` (and without `userScoped`) the router is open and only `protect` (on
+POST/PUT/PATCH/DELETE) and `middleware` (all routes) guard it. Without `query`, `GET /` returns
+every row, or one page when both `?page` and `?limit` are sent, ordered by the `order` option.
+
+## Auth
+
+`AppConfig.auth` mounts `/api/auth` on the model named `modelName` (needs `email`, `password` and,
+for role policies, `role` columns):
+
+| Method | Path | |
+|---|---|---|
+| `POST` | `/login` | `{ email, password }` → `{ token, id, email, role }` |
+| `GET` | `/me` | `{ id, email }` from the token |
+| `POST` | `/register` | when `register` is set |
+| `POST` | `/change-password` | when `changePassword: true`; JWT required |
+| `POST` | `/forgot-password`, `/reset-password` | when `passwordReset` is set; emails need `AppConfig.email` |
+
+`tokenClaims` copies user columns into the JWT next to `id` and `email`, available as
+`req.user.role` etc. `expiresIn` defaults to `30m`.
+
+Middleware for custom routes:
+
+- `createVerifyToken(secret)` (alias `createExtractUser`): requires `Authorization: Bearer <jwt>`, sets `req.user`
+- `createOptionalUser(secret)`: sets `req.user` when a valid token is sent, lets anonymous requests through, rejects invalid tokens
+- `createRequireRole(...roles)`: after one of the above, `403` unless `req.user.role` is listed
+- `evaluateAccess(rule, req)`: checks an access policy or function, returns `{ scope, ownerId }`
+
+## File service
+
+Set `AppConfig.storage` to keep file bytes in an S3-compatible bucket (Cloudflare R2, S3, MinIO)
+and only metadata rows in Postgres. be-core registers a `File` model and mounts `/api/files`.
 
 ```typescript
-interface ProjectPlugin {
-  registerModels?(sequelize: Sequelize): Record<string, ModelStatic<any>>;
-  registerRoutes(app: Express, models: Record<string, ModelStatic<any>>): void;
-}
+storage: {
+  s3: {
+    endpoint: process.env.R2_ENDPOINT!,
+    bucket: process.env.R2_BUCKET!,
+    accessKeyId: process.env.R2_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+    publicBaseUrl: process.env.R2_PUBLIC_BASE_URL,
+  },
+  writeMiddleware: [createVerifyToken(process.env.JWT_SECRET!)],
+},
 ```
 
----
+| Field | Default | |
+|---|---|---|
+| `s3.endpoint`, `s3.bucket`, `s3.accessKeyId`, `s3.secretAccessKey` | | bucket connection |
+| `s3.region` | `'auto'` | |
+| `s3.publicBaseUrl` | | CDN base URL for public files |
+| `s3.forcePathStyle` | `false` | |
+| `writeMiddleware` | `[]` | guards `POST` and `DELETE`; **set it**, uploads are open otherwise |
+| `preferRedirect` | `true` | redirect public files to the CDN instead of proxying |
+| `maxFileSize` | 25 MiB | |
+| `routePath` | `/api/files` | |
+
+| Method | Path | |
+|---|---|---|
+| `POST` | `/api/files` | multipart `file` + `refType`, `refId`, `role`, `visibility`, `sortOrder` → `FileDto` |
+| `GET` | `/api/files?refType=&refId=&role=` | `{ data: FileDto[], total }` |
+| `GET` | `/api/files/:id` | redirect (public) or stream with `ETag` / `Range` |
+| `GET` | `/api/files/:id/meta` | `FileDto` |
+| `DELETE` | `/api/files/:id` | removes bytes and row |
+
+`attachFiles(models.File, storage, refType, rows, { role, as })` batch-loads the files of many rows
+in one query; use it in `enrich`.
+
+## Errors
+
+Routes throw `HttpError(status, message)` (or `ValidationError(issues)`); `defaultErrorHandler`
+answers:
+
+```json
+{ "error": "Bad Request", "message": "Validation failed", "statusCode": 400,
+  "issues": [{ "path": "title", "code": "minLength", "params": { "minLength": 2 } }] }
+```
+
+Sequelize unique and foreign-key violations become `409`, a unique violation with a `unique` issue
+per column. 5xx errors are logged and answered with a generic message.
+
+## Utilities
+
+- `generateId(prefix)`: `prefix` + 32 hex characters, no separator added (`generateId('bk_')` → `bk_9f…`)
+- `parseListQuery(req.query, queryConfig, fields)`: the list-query parser, for plugin routes
+- `combineWhere(...clauses)`: ANDs where-clauses, skipping empty ones
+- `validateFields` and the field types, re-exported from `@eleansphere/schema`
+- `CoreEntity`: base Sequelize model with `id`, `createdAt`, `updatedAt`; `Model.initModel(sequelize, attributes, options)`
+- `createEmailService(emailConfig)`: `send({ to, subject, html, text })` over SMTP
 
 ## Development
 
-### Requirements
-
-- Node.js 22+
-- PostgreSQL
-
-### Install dependencies
+In the [core monorepo](../../README.md):
 
 ```bash
-npm install
+docker compose up -d                              # Postgres on localhost:5433 for the integration tests
+corepack pnpm --filter @eleansphere/be-core build
+corepack pnpm --filter @eleansphere/be-core test  # TEST_DATABASE_URL overrides the local default
 ```
 
-### Build
-
-```bash
-npm run build
-```
-
-### Watch mode
-
-```bash
-npm run dev
-```
-
-### Format code
-
-```bash
-npm run format
-```
-
-### Publishing
-
-Publishing happens automatically via GitHub Actions on push to `main` or `dev`:
-
-- `main` — bumps the minor version (e.g. `1.1.0` → `1.2.0`)
-- `dev` — bumps the patch version (e.g. `1.1.0` → `1.1.1`)
-
----
+Releases go through changesets; see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## License
 

@@ -9,6 +9,7 @@ export interface LoginRequest {
 /** Response of `POST /api/auth/login` from be-core's `createAuthRouter`. */
 export interface LoginResponse {
   token: string;
+  id: string;
   email: string;
   role: string;
 }

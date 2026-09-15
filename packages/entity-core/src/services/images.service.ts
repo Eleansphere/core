@@ -1,5 +1,6 @@
 import type { FileDto } from '../files/file-dto';
-import type { ExtendableService, Fields } from '../entity-factory';
+import type { ExtendableService } from '../entity-factory';
+import type { Fields } from '../entity-types';
 import { FilesClient } from '../files/files-client';
 
 /**

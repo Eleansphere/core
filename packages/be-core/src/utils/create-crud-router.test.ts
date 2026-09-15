@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { RequestHandler } from 'express';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { describe, it, expect, vi } from 'vitest';
@@ -17,6 +17,16 @@ function buildApp(
   app.use(defaultErrorHandler);
   return app;
 }
+
+/** Stands in for token decoding: `x-user` header → `req.user`. */
+const userFromHeader: RequestHandler = (req, _res, next) => {
+  const header = req.headers['x-user'];
+  if (typeof header === 'string') {
+    const [id, role] = header.split(':');
+    req.user = { id, email: `${id}@test.cz`, role };
+  }
+  next();
+};
 
 describe('createCrudRouter — hashFields', () => {
   it('hashes a plaintext value on create', async () => {
@@ -62,12 +72,13 @@ describe('createCrudRouter — protect', () => {
     expect((await request(app).get('/items/1')).status).toBe(200);
   });
 
-  it('gates POST/PUT/DELETE behind `protect`', async () => {
+  it('gates POST/PUT/PATCH/DELETE behind `protect`', async () => {
     const model = createFakeModel('Item', [{ id: '1', name: 'a' }]);
     const app = buildApp(model, { protect: [rejectAll] });
 
     expect((await request(app).post('/items').send({})).status).toBe(401);
     expect((await request(app).put('/items/1').send({})).status).toBe(401);
+    expect((await request(app).patch('/items/1').send({})).status).toBe(401);
     expect((await request(app).delete('/items/1')).status).toBe(401);
   });
 
@@ -133,5 +144,116 @@ describe('createCrudRouter — beforeDelete', () => {
     expect(res.status).toBe(204);
     expect(beforeDelete).toHaveBeenCalledOnce();
     expect(model.__rows).toHaveLength(0);
+  });
+});
+
+describe('createCrudRouter — body stripping', () => {
+  it('never takes id, timestamps or readOnly fields from the client', async () => {
+    const model = createFakeModel('Item', []);
+    const app = buildApp(model, {
+      prefix: 'it_',
+      generateId: (prefix) => `${prefix}generated`,
+      readOnlyFields: ['role'],
+    });
+
+    await request(app)
+      .post('/items')
+      .send({ id: 'chosen', createdAt: '2000-01-01', role: 'admin', name: 'a' });
+
+    expect(model.__rows[0]).toEqual(expect.objectContaining({ id: 'it_generated', name: 'a' }));
+    expect(model.__rows[0]).not.toHaveProperty('createdAt');
+    expect(model.__rows[0]).not.toHaveProperty('role');
+  });
+});
+
+describe('createCrudRouter — partial update', () => {
+  it('PATCH changes only the fields sent, and the hook sees only those', async () => {
+    const model = createFakeModel('Item', [{ id: '1', name: 'a', color: 'red' }]);
+    const beforeUpdate = vi.fn(async (data: Record<string, unknown>) => data);
+    const app = buildApp(model, { hooks: { beforeUpdate } });
+
+    const res = await request(app).patch('/items/1').send({ color: 'blue' });
+
+    expect(res.status).toBe(200);
+    expect(model.__rows[0]).toEqual(expect.objectContaining({ name: 'a', color: 'blue' }));
+    expect(beforeUpdate).toHaveBeenCalledWith({ color: 'blue' }, expect.anything());
+  });
+});
+
+describe('createCrudRouter — access', () => {
+  it('owner: stamps the owner from the token, ignoring one sent in the body', async () => {
+    const model = createFakeModel('Item', []);
+    const app = buildApp(model, {
+      authenticate: userFromHeader,
+      access: { read: 'owner', write: 'owner' },
+    });
+
+    const res = await request(app)
+      .post('/items')
+      .set('x-user', 'u_alice')
+      .send({ name: 'a', ownerId: 'u_bob' });
+
+    expect(res.status).toBe(201);
+    expect(model.__rows[0].ownerId).toBe('u_alice');
+  });
+
+  it('owner: lists only own rows and 404s on anyone else’s', async () => {
+    const model = createFakeModel('Item', [
+      { id: '1', ownerId: 'u_alice' },
+      { id: '2', ownerId: 'u_bob' },
+    ]);
+    const app = buildApp(model, {
+      authenticate: userFromHeader,
+      access: { read: 'owner', write: 'owner' },
+    });
+
+    const list = await request(app).get('/items').set('x-user', 'u_alice');
+    expect(list.body.data.map((row: any) => row.id)).toEqual(['1']);
+
+    expect((await request(app).get('/items/2').set('x-user', 'u_alice')).status).toBe(404);
+    expect((await request(app).patch('/items/2').set('x-user', 'u_alice').send({})).status).toBe(
+      404
+    );
+    expect((await request(app).delete('/items/2').set('x-user', 'u_alice')).status).toBe(404);
+    expect(model.__rows).toHaveLength(2);
+  });
+
+  it('owner: rejects anonymous callers with 401', async () => {
+    const model = createFakeModel('Item', []);
+    const app = buildApp(model, { authenticate: userFromHeader, userScoped: true });
+
+    expect((await request(app).get('/items')).status).toBe(401);
+  });
+
+  it('roles: 403 for a signed-in user without the role', async () => {
+    const model = createFakeModel('Item', []);
+    const app = buildApp(model, {
+      authenticate: userFromHeader,
+      access: { read: 'public', write: 'admin' },
+    });
+
+    expect((await request(app).get('/items')).status).toBe(200);
+    expect((await request(app).post('/items').set('x-user', 'u_alice:user')).status).toBe(403);
+    expect((await request(app).post('/items').set('x-user', 'u_root:admin')).status).toBe(201);
+  });
+
+  it('function rule: false denies, a where-object scopes the rows', async () => {
+    const model = createFakeModel('Item', [
+      { id: '1', visibility: 'public' },
+      { id: '2', visibility: 'private' },
+    ]);
+    const app = buildApp(model, {
+      authenticate: userFromHeader,
+      access: {
+        read: () => ({ visibility: 'public' }),
+        write: (req) => req.user?.role === 'admin',
+      },
+    });
+
+    const list = await request(app).get('/items');
+    expect(list.body.data.map((row: any) => row.id)).toEqual(['1']);
+    expect((await request(app).get('/items/2')).status).toBe(404);
+    expect((await request(app).post('/items')).status).toBe(401);
+    expect((await request(app).post('/items').set('x-user', 'u_alice:user')).status).toBe(403);
   });
 });

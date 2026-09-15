@@ -1,86 +1,18 @@
-import type { ModelConfig, FieldConfig, FieldType, FieldValidation } from '@eleansphere/be-core';
+import type { AccessConfig, IndexConfig, ModelConfig, QueryConfig } from '@eleansphere/schema';
 import type { ApiClient } from './http/api-client';
 import { CrudServiceBase } from './services/crud.service';
-import type { PaginationParams, PaginatedResponse } from './services/crud.service';
-
-// ── Field definitions ─────────────────────────────────────────────────────────
-
-/**
- * A single field's definition. Built directly on be-core's `FieldValidation` and `FieldType`, so
- * the two can't drift: every validation be-core understands (`unique`, `minLength`, `maxLength`,
- * `min`, `max`, `format`) is accepted here and type-checked — instead of being waved through an
- * untyped `[key: string]: unknown` index signature like before. be-core owns the vocabulary;
- * entity-core depends on it (type-only import — no runtime/bundle cost).
- */
-export type FieldDef = Omit<FieldValidation, 'required'> & {
-  type: FieldType;
-  /** Use `required: true` (literal). Prevents TypeScript from widening to `boolean`. */
-  required?: true;
-  /**
-   * Excluded from the read Dto (TS type AND stripped at runtime from `new Dto(data)`), and
-   * from the JSON response the backend actually sends (be-core `sensitive`, applied
-   * automatically — no need to also set `sensitive` yourself). Still present in CreateDto /
-   * UpdateDto, since e.g. a password has to be submittable on create/update.
-   * Use for anything that should never round-trip back to a client: passwords, tokens, blobs
-   * you only ever write.
-   */
-  writeOnly?: true;
-  default?: unknown;
-  /**
-   * Hash this field with bcrypt on create/update (be-core `hash: 'bcrypt'`, applied server-side —
-   * see `@eleansphere/be-core`'s `FieldConfig`). Typically paired with `writeOnly: true`.
-   */
-  hash?: 'bcrypt';
-};
-
-export type Fields = Record<string, FieldDef>;
-
-// ── Type inference ────────────────────────────────────────────────────────────
-
-type FieldTypeMap = {
-  STRING: string;
-  TEXT: string;
-  INTEGER: number;
-  FLOAT: number;
-  BOOLEAN: boolean;
-  DATE: string;
-  BLOB: Blob;
-};
-
-// Compile-time guard: if be-core's `FieldType` gains a member that `FieldTypeMap` doesn't cover,
-// this assignment stops compiling — so the inference below fails loudly at build time instead of
-// silently degrading a real field to `unknown`. Exported (but not re-exported from index) so it
-// can't trip `noUnusedLocals`; it is not part of the public API.
-type UnmappedFieldTypes = Exclude<FieldType, keyof FieldTypeMap>;
-export const __fieldTypeMapIsExhaustive: [UnmappedFieldTypes] extends [never]
-  ? true
-  : UnmappedFieldTypes = true;
-
-type MapType<F extends FieldDef> = FieldTypeMap[F['type']];
-
-// Required in read Dto if: required:true OR has a default value
-type RequiredInDto<F extends FieldDef> = F extends { required: true }
-  ? true
-  : F extends { default: unknown }
-    ? true
-    : false;
-
-/** Inferred read DTO — excludes writeOnly fields */
-export type InferDto<F extends Fields> = { id: string; createdAt?: string; updatedAt?: string } & {
-  [K in keyof F as F[K] extends { writeOnly: true } ? never : K]: RequiredInDto<F[K]> extends true
-    ? MapType<F[K]>
-    : MapType<F[K]> | undefined;
-};
-
-/** Inferred create DTO — all fields present, respects required */
-export type InferCreateDto<F extends Fields> = {
-  [K in keyof F]: F[K] extends { required: true } ? MapType<F[K]> : MapType<F[K]> | undefined;
-};
-
-/** Inferred update DTO — all fields optional */
-export type InferUpdateDto<F extends Fields> = {
-  [K in keyof F]?: MapType<F[K]>;
-};
+import type { PaginatedResponse } from './services/list-request';
+import type {
+  EntityDto,
+  EntityIndex,
+  EntityQuery,
+  Fields,
+  InferCreateDto,
+  InferUpdateDto,
+  ListParams,
+  NoQuery,
+} from './entity-types';
+import { toFieldConfigs } from './field-configs';
 
 // ── DTO class factory ─────────────────────────────────────────────────────────
 
@@ -90,7 +22,6 @@ export type DtoClass<T> = new (data?: Partial<T>) => T;
  * `stripKeys` are deleted from the constructed instance after assignment — used for the read
  * Dto so a `writeOnly` field (e.g. password) can never survive a `new Dto(rawApiResponse)` call
  * even if it were ever present in the response data, regardless of what the TS type claims.
- * CreateDto/UpdateDto are built with no strip keys, since writeOnly fields must round-trip there.
  */
 function makeDtoClass<T>(stripKeys: string[] = []): DtoClass<T> {
   return class {
@@ -101,27 +32,9 @@ function makeDtoClass<T>(stripKeys: string[] = []): DtoClass<T> {
   } as unknown as DtoClass<T>;
 }
 
-// ── ModelConfig field translation ─────────────────────────────────────────────
+// ── Services ──────────────────────────────────────────────────────────────────
 
-/**
- * Translates entity-core's `writeOnly` into be-core's `sensitive` (the flag be-core actually
- * checks at runtime to strip a field from JSON responses), and drops `writeOnly` itself before
- * handing the field to be-core's `ModelConfig`, which doesn't know that key. This is the single
- * place that keeps "excluded from the Dto" and "stripped from the real API response" in sync —
- * previously these were two separate, easy-to-desync flags (writeOnly vs sensitive) that a
- * consumer had to remember to set both of.
- */
-function toModelConfigFields(fields: Fields): Record<string, FieldConfig> {
-  const result: Record<string, FieldConfig> = {};
-  for (const [key, field] of Object.entries(fields)) {
-    const { writeOnly, ...rest } = field;
-    result[key] = (writeOnly ? { ...rest, sensitive: true } : rest) as FieldConfig;
-  }
-  return result;
-}
-
-// ── defineEntity ──────────────────────────────────────────────────────────────
-
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyConstructor = abstract new (...args: any[]) => any;
 
 /** A service constructor as instantiated by `createServiceContainer` / a project container. */
@@ -132,122 +45,151 @@ type ServiceCtor<Instance> = new (baseUrl: string, tokenProvider: () => string |
  * for a normal entity. Declared structurally (not as `CrudServiceBase<…>` directly) so it
  * stays non-abstract and `new`-able.
  */
-export type CrudServiceInstance<TFields extends Fields> = {
-  getAll(params?: PaginationParams): Promise<PaginatedResponse<InferDto<TFields>>>;
-  getById(id: string): Promise<InferDto<TFields>>;
-  create(data: InferCreateDto<TFields>): Promise<InferDto<TFields>>;
-  update(id: string, data: InferUpdateDto<TFields>): Promise<InferDto<TFields>>;
+export type CrudServiceInstance<
+  TFields extends Fields,
+  TOwned extends boolean = false,
+  TQuery = NoQuery,
+> = {
+  getAll(
+    params?: ListParams<TFields, TQuery>
+  ): Promise<PaginatedResponse<EntityDto<TFields, TOwned>>>;
+  getById(id: string): Promise<EntityDto<TFields, TOwned>>;
+  create(data: InferCreateDto<TFields>): Promise<EntityDto<TFields, TOwned>>;
+  /** Partial update (PATCH): only the fields sent change. */
+  update(id: string, data: InferUpdateDto<TFields>): Promise<EntityDto<TFields, TOwned>>;
   delete(id: string): Promise<void>;
 };
 
 /**
- * The HTTP helpers an `extend` body reaches for on `this` — the `ApiClient` CRUD verbs, `basePath`,
+ * The HTTP helpers an `extend` body reaches for on `this` — the `ApiClient` verbs, `basePath`,
  * and `baseUrl`/`tokenProvider` (so a mixin like `withImages` can build its own `FilesClient`
- * scoped to the same backend/auth — file upload isn't an `ApiClient` concern, see `FilesClient`).
+ * scoped to the same backend/auth).
  */
 type ServiceHttpHelpers = Pick<
   ApiClient,
-  'baseUrl' | 'tokenProvider' | 'get' | 'post' | 'put' | 'httpDelete'
+  'baseUrl' | 'tokenProvider' | 'get' | 'post' | 'put' | 'patch' | 'httpDelete'
 > & {
   readonly basePath: string;
 };
 
 /**
  * The class `extend` receives. `class extends Base { … }` gives a `new`-able subclass whose `this`
- * has the CRUD methods and the HTTP helpers (`this.get`, `this.basePath`, …) — all typed, no
- * `(Base as any)` / `(this as any)`. (The old cast style still compiles.)
+ * has the CRUD methods and the HTTP helpers (`this.get`, `this.basePath`, …) — all typed.
  */
-export type ExtendableService<TFields extends Fields> = new (
+export type ExtendableService<
+  TFields extends Fields,
+  TOwned extends boolean = false,
+  TQuery = NoQuery,
+> = new (
   baseUrl: string,
   tokenProvider: () => string | null
-) => CrudServiceInstance<TFields> & ServiceHttpHelpers;
+) => CrudServiceInstance<TFields, TOwned, TQuery> & ServiceHttpHelpers;
 
-type EntityOptions<TFields extends Fields, TServiceCtor extends AnyConstructor> = {
+// ── defineEntity ──────────────────────────────────────────────────────────────
+
+type EntityOptions<
+  TFields extends Fields,
+  TOwned extends boolean,
+  TQuery extends EntityQuery<TFields>,
+  TServiceCtor extends AnyConstructor,
+> = {
   name: string;
+  /** Prepended to generated ids; include your own separator, e.g. `'bk_'`. */
   prefix: string;
-  /** HTTP base path used by the service. Defaults to /api/{name}s */
+  /** HTTP base path used by the service and, unless `routePath` is set, by the server. */
   basePath?: string;
-  /** Override route path in be-core model config when it differs from basePath */
+  /** Server route path, when it differs from `basePath`. */
   routePath?: string;
-  userScoped?: boolean;
+  /** Rows belong to the signed-in user: `access` defaults to `owner`, DTOs gain `ownerId`. */
+  userScoped?: TOwned;
+  /** Per-operation access to the auto-mounted routes. Default `auth` (or `owner` when scoped). */
+  access?: Partial<AccessConfig>;
+  /** List filters, sort and search the API accepts; also types the service's `getAll`. */
+  query?: TQuery;
+  indexes?: readonly EntityIndex<TFields>[];
   /**
-   * Mounts a public (no auth) `GET {basePath}/active` route returning records where
-   * `from <= now <= to` (be-core `ModelConfig.activeRange`). Mounted even when this entity is
-   * registered as `custom` in `toModelConfigs` — that only skips the CRUD routes.
+   * Mounts a public `GET {basePath}/active` route returning records where `from <= now <= to`
+   * (be-core `ModelConfig.activeRange`), even when the entity is registered as `custom`.
    */
-  activeRange?: { from: string; to: string };
+  activeRange?: { from: keyof TFields & string; to: keyof TFields & string };
   fields: TFields;
   /**
    * Extend the generated service class with custom methods. The returned constructor's instance
-   * type becomes `InstanceType<typeof entity.Service>` — so add `getByFoo` and it shows up on
-   * `getServices().entity`, alongside the inherited CRUD.
+   * type becomes `InstanceType<typeof entity.Service>`, alongside the inherited CRUD.
    */
-  extend?: (Base: ExtendableService<TFields>) => TServiceCtor;
+  extend?: (Base: ExtendableService<TFields, TOwned, TQuery>) => TServiceCtor;
 };
 
 export type EntityResult<
   TFields extends Fields,
   TServiceCtor extends AnyConstructor = ServiceCtor<CrudServiceInstance<TFields>>,
+  TOwned extends boolean = false,
+  TQuery = NoQuery,
 > = {
   config: ModelConfig;
-  Dto: DtoClass<InferDto<TFields>>;
+  /** The field definitions, e.g. for `toStandardSchema(entity.fields, 'create')`. */
+  fields: TFields;
+  query: TQuery | undefined;
+  Dto: DtoClass<EntityDto<TFields, TOwned>>;
   CreateDto: DtoClass<InferCreateDto<TFields>>;
   UpdateDto: DtoClass<InferUpdateDto<TFields>>;
-  /**
-   * The generated service class. `InstanceType<typeof entity.Service>` is the CRUD surface
-   * (`getAll` / `getById` / `create` / `update` / `delete`) plus whatever `extend` added.
-   */
+  /** The generated service class: CRUD plus whatever `extend` added. */
   Service: TServiceCtor;
 };
 
-// `TServiceCtor` is inferred from `extend`'s return, otherwise the plain CRUD service
-// constructor. `extend` bodies written as `class extends Base` are `new`-able directly; the
-// legacy `class extends (Base as any)` erases the constructor signature, so those must go
-// through `createServiceContainer`.
+// `const TFields` / `const TQuery` keep literals (`required: true`, ENUM `values`, filter
+// operators) without `as const` at every call site. `TServiceCtor` is inferred from `extend`'s
+// return, otherwise the plain CRUD service constructor.
 export function defineEntity<
-  TFields extends Fields,
-  TServiceCtor extends AnyConstructor = ServiceCtor<CrudServiceInstance<TFields>>,
->(options: EntityOptions<TFields, TServiceCtor>): EntityResult<TFields, TServiceCtor>;
+  const TFields extends Fields,
+  TOwned extends boolean = false,
+  const TQuery extends EntityQuery<TFields> = NoQuery,
+  TServiceCtor extends AnyConstructor = ServiceCtor<CrudServiceInstance<TFields, TOwned, TQuery>>,
+>(
+  options: EntityOptions<TFields, TOwned, TQuery, TServiceCtor>
+): EntityResult<TFields, TServiceCtor, TOwned, TQuery>;
 
-// Looser implementation signature (not part of the public API): the body below builds
-// `ServiceBase`/`Service` through `AnyConstructor`, so it needs `extend` untied from the real
-// `TServiceCtor` the public overload above promises to callers.
-export function defineEntity<TFields extends Fields>(
+// Looser implementation signature (not part of the public API): the body builds the service
+// class through `AnyConstructor`, so it needs `extend` untied from the `TServiceCtor` the public
+// overload promises to callers.
+export function defineEntity(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  options: EntityOptions<TFields, any>
-): EntityResult<TFields, AnyConstructor> {
-  const { name, prefix, basePath, routePath, userScoped, activeRange, fields, extend } = options;
-
-  const path = basePath ?? `/api/${name}s`;
-
-  // ── Model config ────────────────────────────────────────────────────────────
-  const config = {
+  options: EntityOptions<Fields, boolean, EntityQuery<Fields>, any>
+): EntityResult<Fields, AnyConstructor, boolean, EntityQuery<Fields>> {
+  const {
     name,
     prefix,
-    ...(routePath != null && { routePath }),
-    ...(userScoped != null && { userScoped }),
-    ...(activeRange != null && { activeRange }),
-    fields: toModelConfigFields(fields),
-  } satisfies ModelConfig;
+    basePath,
+    routePath,
+    userScoped,
+    access,
+    query,
+    indexes,
+    activeRange,
+    fields,
+    extend,
+  } = options;
 
-  // ── DTO classes ─────────────────────────────────────────────────────────────
+  const servicePath = basePath ?? `/api/${name}s`;
+  const serverRoutePath = routePath ?? basePath;
+
+  const config: ModelConfig = {
+    name,
+    prefix,
+    ...(serverRoutePath !== undefined && { routePath: serverRoutePath }),
+    ...(userScoped !== undefined && { userScoped }),
+    ...(access !== undefined && { access }),
+    ...(query !== undefined && { query: query as QueryConfig }),
+    ...(indexes !== undefined && { indexes: indexes as readonly IndexConfig[] }),
+    ...(activeRange !== undefined && { activeRange }),
+    fields: toFieldConfigs(fields),
+  };
+
   const writeOnlyKeys = Object.entries(fields)
     .filter(([, field]) => field.writeOnly)
     .map(([key]) => key);
 
-  const Dto = makeDtoClass<InferDto<TFields>>(writeOnlyKeys);
-  const CreateDto = makeDtoClass<InferCreateDto<TFields>>();
-  const UpdateDto = makeDtoClass<InferUpdateDto<TFields>>();
-
-  // ── Service class ───────────────────────────────────────────────────────────
-  // `userScoped` is a backend concern (be-core stamps/enforces `ownerId`); the client service is
-  // a plain CRUD service either way.
-  const servicePath = path;
-  const ServiceBase = class extends CrudServiceBase<
-    InferDto<TFields>,
-    InferCreateDto<TFields>,
-    InferUpdateDto<TFields>
-  > {
+  const ServiceBase = class extends CrudServiceBase<unknown, unknown, unknown> {
     protected readonly basePath = servicePath;
   } as unknown as AnyConstructor;
 
@@ -257,5 +199,13 @@ export function defineEntity<TFields extends Fields>(
     ? (extend as (base: AnyConstructor) => AnyConstructor)(ServiceBase)
     : ServiceBase;
 
-  return { config, Dto, CreateDto, UpdateDto, Service } as EntityResult<TFields, AnyConstructor>;
+  return {
+    config,
+    fields,
+    query,
+    Dto: makeDtoClass(writeOnlyKeys),
+    CreateDto: makeDtoClass(),
+    UpdateDto: makeDtoClass(),
+    Service,
+  } as EntityResult<Fields, AnyConstructor, boolean, EntityQuery<Fields>>;
 }

@@ -1,3 +1,7 @@
+import type { ValidationIssue } from '@eleansphere/schema';
+
+type ErrorBody = { message?: unknown; issues?: unknown } | undefined;
+
 /**
  * Thrown by `HttpTransport` (and anything built on it — `ApiClient`, `FilesClient`) for any
  * non-2xx response. Carries the real HTTP status and the parsed error body, instead of a bare
@@ -23,5 +27,17 @@ export class ApiError extends Error {
 
   get isNotFound(): boolean {
     return this.status === 404;
+  }
+
+  /** The server's explanation (`message` in be-core's error body), when it sent one. */
+  get detail(): string | undefined {
+    const message = (this.body as ErrorBody)?.message;
+    return typeof message === 'string' ? message : undefined;
+  }
+
+  /** Field problems of a validation error (be-core's `issues`); empty for any other error. */
+  get issues(): ValidationIssue[] {
+    const issues = (this.body as ErrorBody)?.issues;
+    return Array.isArray(issues) ? (issues as ValidationIssue[]) : [];
   }
 }

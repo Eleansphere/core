@@ -1,12 +1,15 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { Model, WhereOptions } from 'sequelize';
+import { CreationAttributes, Model, WhereOptions } from 'sequelize';
+import { OWNER_FIELD, SYSTEM_FIELDS } from '@eleansphere/schema';
+import type { QueryConfig } from '@eleansphere/schema';
 import { CrudRouterOptions } from '../types/crud-router';
 import { HttpError } from '../app/error-handler';
 import { hashPassword, looksHashed } from './hash-password';
+import { AccessGrant, AccessRules, CrudOperation, evaluateAccess } from '../access/access-rules';
+import { combineWhere } from './combine-where';
+import { parseListQuery } from './list-query';
 
-// `userScoped` models are expected to have this column (be-core's own convention, not a Sequelize
-// one — `T extends Model` doesn't statically know about it).
-type OwnedEntity = { ownerId?: string };
+const OWNER_ONLY_ACCESS: AccessRules = { read: 'owner', write: 'owner' };
 
 async function applyHashFields(
   data: Record<string, unknown>,
@@ -19,6 +22,12 @@ async function applyHashFields(
     }
   }
   return data;
+}
+
+function withoutKeys(data: Record<string, unknown>, keys: Iterable<string>) {
+  const copy = { ...data };
+  for (const key of keys) delete copy[key];
+  return copy;
 }
 
 export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>): Router {
@@ -36,8 +45,16 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
     order,
     enrich,
     beforeDelete,
+    access,
+    authenticate,
+    query,
+    fields = {},
+    readOnlyFields = [],
   } = options;
   const router = Router();
+  const accessRules = access ?? (userScoped ? OWNER_ONLY_ACCESS : undefined);
+  const resolveUser = authenticate ? [authenticate] : [];
+  const clientForbiddenFields = [...SYSTEM_FIELDS, ...readOnlyFields];
 
   // Wraps a single entity through `enrich` (which works on arrays, for the batch-loading list
   // case) and unwraps the one result back out, so GET-by-id / CREATE / UPDATE can share it.
@@ -45,6 +62,10 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
     if (!enrich) return entity as unknown as Record<string, unknown>;
     const [dto] = await enrich([entity]);
     return dto;
+  }
+
+  function toResponseRows(rows: T[]): Promise<unknown[]> | T[] {
+    return enrich ? enrich(rows) : rows;
   }
 
   function logAction(action: string, payload?: unknown) {
@@ -68,24 +89,71 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
     };
   }
 
-  // The authenticated user's id, for userScoped models. `middleware` already rejects requests
-  // without a valid token when userScoped, so a missing id here is a misconfiguration, not an
-  // anonymous caller — surface it as 401 rather than silently querying with `ownerId: undefined`.
-  function requireOwnerId(req: Request): string {
-    const id = req.user?.id;
-    if (!id) throw new HttpError(401, 'Authentication required');
-    return id;
+  function grantAccess(req: Request, operation: CrudOperation): Promise<AccessGrant> {
+    const rule = accessRules?.[operation];
+    return rule === undefined ? Promise.resolve({}) : evaluateAccess(rule, req);
   }
 
-  // Loads a record by id and, for userScoped models, verifies the caller owns it. "Not yours" is
-  // reported as 404, not 403 — a userScoped collection must not leak which ids exist.
-  async function findOwnedOrThrow(req: Request, id: string): Promise<T> {
-    const entity = await model.findByPk(id);
+  // Ids, timestamps and server-managed fields never come from a client; under an owner policy
+  // neither does `ownerId` (it's stamped from the token on create and can't be reassigned).
+  function readClientBody(req: Request, grant: AccessGrant): Record<string, unknown> {
+    const forbidden = grant.ownerId
+      ? [...clientForbiddenFields, OWNER_FIELD]
+      : clientForbiddenFields;
+    return withoutKeys(req.body ?? {}, forbidden);
+  }
+
+  // "Not in your scope" and "doesn't exist" are both 404, so a scoped collection doesn't leak
+  // which ids exist.
+  async function findInScopeOrThrow(id: string, scope: WhereOptions | undefined): Promise<T> {
+    const entity = await model.findOne({ where: { ...(scope as object), id } as WhereOptions });
     if (!entity) throw new HttpError(404, `${model.name} not found`);
-    if (userScoped && (entity as unknown as OwnedEntity).ownerId !== requireOwnerId(req)) {
-      throw new HttpError(404, `${model.name} not found`);
-    }
     return entity;
+  }
+
+  async function sendQueriedPage(
+    req: Request,
+    res: Response,
+    scopedWhere: WhereOptions,
+    queryConfig: QueryConfig
+  ): Promise<void> {
+    const list = parseListQuery(req.query, queryConfig, fields);
+    const { count, rows } = await model.findAndCountAll({
+      where: combineWhere(scopedWhere, list.where),
+      order: list.order,
+      limit: list.limit,
+      offset: list.offset,
+    });
+    res.json({
+      data: await toResponseRows(rows),
+      total: count,
+      page: list.page,
+      limit: list.limit,
+    });
+  }
+
+  // Without a `query` config: every row, or one page when both `?page` and `?limit` are sent.
+  async function sendUnconfiguredList(
+    req: Request,
+    res: Response,
+    scopedWhere: WhereOptions
+  ): Promise<void> {
+    const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+
+    if (page !== undefined && limit !== undefined) {
+      const offset = (page - 1) * limit;
+      const { count, rows } = await model.findAndCountAll({
+        where: scopedWhere,
+        limit,
+        offset,
+        order,
+      });
+      res.json({ data: await toResponseRows(rows), total: count, page, limit });
+    } else {
+      const rows = await model.findAll({ where: scopedWhere, order });
+      res.json({ data: await toResponseRows(rows), total: rows.length });
+    }
   }
 
   // CREATE
@@ -93,16 +161,15 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
     '/',
     ...protect,
     ...middleware,
+    ...resolveUser,
     handle('CREATE', async (req, res) => {
-      let data = { ...req.body };
+      const grant = await grantAccess(req, 'write');
+      let data = readClientBody(req, grant);
       if (generateId && prefix) {
         data.id = generateId(prefix);
       }
-
-      // Ownership comes from the token, never the request body. Set before the hook so field
-      // validation sees it and a client-supplied `ownerId` can't win.
-      if (userScoped) {
-        data.ownerId = requireOwnerId(req);
+      if (grant.ownerId) {
+        data[OWNER_FIELD] = grant.ownerId;
       }
 
       if (hooks?.beforeCreate) {
@@ -113,37 +180,26 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
       }
       logAction('CREATE request', data);
 
-      const entity = await model.create(data);
+      const entity = await model.create(data as CreationAttributes<T>);
       res.status(201).json(await enrichOne(entity));
 
       logAction('CREATE success', entity.toJSON());
     })
   );
 
-  // READ all (with optional server-side pagination via ?page=1&limit=20)
+  // READ all
   router.get(
     '/',
     ...middleware,
+    ...resolveUser,
     handle('READ all', async (req, res) => {
       logAction('READ all request');
-      // `WhereOptions` (no attribute type arg): `model` is the generic `Model`, so Sequelize
-      // can't check `ownerId`/`buildWhere`'s keys against real column names here.
-      const where: WhereOptions = {
-        ...buildWhere?.(req),
-        ...(userScoped && { ownerId: requireOwnerId(req) }),
-      };
-      const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
-      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
-
-      if (page !== undefined && limit !== undefined) {
-        const offset = (page - 1) * limit;
-        const { count, rows } = await model.findAndCountAll({ where, limit, offset, order });
-        res
-          .status(200)
-          .json({ data: enrich ? await enrich(rows) : rows, total: count, page, limit });
+      const { scope } = await grantAccess(req, 'read');
+      const scopedWhere = combineWhere(scope, buildWhere?.(req) as WhereOptions | undefined);
+      if (query) {
+        await sendQueriedPage(req, res, scopedWhere, query);
       } else {
-        const rows = await model.findAll({ where, order });
-        res.status(200).json({ data: enrich ? await enrich(rows) : rows, total: rows.length });
+        await sendUnconfiguredList(req, res, scopedWhere);
       }
     })
   );
@@ -152,49 +208,47 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
   router.get(
     '/:id',
     ...middleware,
+    ...resolveUser,
     handle('READ by ID', async (req, res) => {
       logAction('READ by ID request', req.params.id);
-      const entity = await findOwnedOrThrow(req, req.params.id);
+      const { scope } = await grantAccess(req, 'read');
+      const entity = await findInScopeOrThrow(req.params.id, scope);
       res.json(await enrichOne(entity));
     })
   );
 
-  // UPDATE
-  router.put(
-    '/:id',
-    ...protect,
-    ...middleware,
-    handle('UPDATE', async (req, res) => {
-      logAction('UPDATE request', { id: req.params.id, body: req.body });
-      const entity = await findOwnedOrThrow(req, req.params.id);
-      let data = { ...req.body };
+  // UPDATE — PATCH and PUT share one partial-update handler: only the fields sent change, and the
+  // update hook sees just those. PUT stays for existing clients.
+  const updateHandler = handle('UPDATE', async (req, res) => {
+    const grant = await grantAccess(req, 'write');
+    const entity = await findInScopeOrThrow(req.params.id, grant.scope);
+    let data = readClientBody(req, grant);
 
-      // `ownerId` is assigned once, at creation. Pin it to the current owner so an update can't
-      // reassign the record to another user (and so it stays present for field validation).
-      if (userScoped) {
-        data.ownerId = (entity as unknown as OwnedEntity).ownerId;
-      }
+    if (hooks?.beforeUpdate) {
+      data = await hooks.beforeUpdate(data, req);
+    }
+    if (hashFields.length) {
+      data = await applyHashFields(data, hashFields);
+    }
+    logAction('UPDATE request', { id: req.params.id, body: data });
 
-      if (hooks?.beforeUpdate) {
-        data = await hooks.beforeUpdate(data, req);
-      }
-      if (hashFields.length) {
-        data = await applyHashFields(data, hashFields);
-      }
-      await entity.update(data);
-      res.json(await enrichOne(entity));
-      logAction('UPDATE success', entity.toJSON());
-    })
-  );
+    await entity.update(data);
+    res.json(await enrichOne(entity));
+    logAction('UPDATE success', entity.toJSON());
+  });
+  router.patch('/:id', ...protect, ...middleware, ...resolveUser, updateHandler);
+  router.put('/:id', ...protect, ...middleware, ...resolveUser, updateHandler);
 
   // DELETE
   router.delete(
     '/:id',
     ...protect,
     ...middleware,
+    ...resolveUser,
     handle('DELETE', async (req, res) => {
       logAction('DELETE request', req.params.id);
-      const entity = await findOwnedOrThrow(req, req.params.id);
+      const { scope } = await grantAccess(req, 'write');
+      const entity = await findInScopeOrThrow(req.params.id, scope);
       if (beforeDelete) {
         await beforeDelete(entity, req);
       }

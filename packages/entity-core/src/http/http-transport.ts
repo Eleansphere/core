@@ -1,9 +1,11 @@
 import { ApiError } from './api-error';
 
+type JsonBodyMethod = 'POST' | 'PUT' | 'PATCH';
+
 /**
  * The one place that knows how to talk to the backend: auth headers, JSON vs. multipart bodies,
- * and turning a non-2xx response into an `ApiError`. `ApiClient` (JSON CRUD verbs) and
- * `FilesClient` (the detached file service) both extend this instead of duplicating it.
+ * and turning a non-2xx response into an `ApiError`. `ApiClient` (JSON verbs) and `FilesClient`
+ * (the detached file service) both extend this instead of duplicating it.
  *
  * Not meant to be used directly — its methods are `protected`. Extend it to add a new kind of
  * client; `ApiClient`/`FilesClient` are the examples to follow.
@@ -48,6 +50,16 @@ export class HttpTransport {
     return url;
   }
 
+  private async sendJson<T>(method: JsonBodyMethod, path: string, body: unknown): Promise<T> {
+    const res = await fetch(this.buildUrl(path), {
+      method,
+      headers: this.jsonHeaders(),
+      body: JSON.stringify(body),
+    });
+    await this.assertOk(res);
+    return res.json();
+  }
+
   protected async getJson<T, P extends object = Record<string, never>>(
     path: string,
     params?: P
@@ -57,24 +69,16 @@ export class HttpTransport {
     return res.json();
   }
 
-  protected async postJson<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(this.buildUrl(path), {
-      method: 'POST',
-      headers: this.jsonHeaders(),
-      body: JSON.stringify(body),
-    });
-    await this.assertOk(res);
-    return res.json();
+  protected postJson<T>(path: string, body: unknown): Promise<T> {
+    return this.sendJson<T>('POST', path, body);
   }
 
-  protected async putJson<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(this.buildUrl(path), {
-      method: 'PUT',
-      headers: this.jsonHeaders(),
-      body: JSON.stringify(body),
-    });
-    await this.assertOk(res);
-    return res.json();
+  protected putJson<T>(path: string, body: unknown): Promise<T> {
+    return this.sendJson<T>('PUT', path, body);
+  }
+
+  protected patchJson<T>(path: string, body: unknown): Promise<T> {
+    return this.sendJson<T>('PATCH', path, body);
   }
 
   protected async deleteRequest(path: string): Promise<void> {

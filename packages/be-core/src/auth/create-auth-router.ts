@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { ModelStatic } from 'sequelize';
+import { Model, ModelStatic } from 'sequelize';
 import jwt from 'jsonwebtoken';
 import { HttpError } from '../app/error-handler';
 import { createExtractUser } from './create-verify-token';
@@ -28,6 +28,11 @@ export interface RegisterConfig {
 export interface AuthConfig {
   jwtSecret: string;
   expiresIn?: string;
+  /**
+   * User columns copied into the JWT next to `id` and `email`, so they're available as
+   * `req.user.<claim>` without a database lookup. Role-based access policies need `'role'`.
+   */
+  tokenClaims?: string[];
   emailService?: EmailService;
   passwordReset?: PasswordResetConfig;
   /** Mounts `POST /register` — self-service sign-up. Omit to leave registration to the project. */
@@ -40,10 +45,18 @@ export interface AuthConfig {
   changePassword?: boolean;
 }
 
+const DEFAULT_TOKEN_LIFETIME = '30m';
+
+function buildTokenPayload(user: Model, tokenClaims: readonly string[]): Record<string, unknown> {
+  const claims = Object.fromEntries(tokenClaims.map((claim) => [claim, user.get(claim)]));
+  return { ...claims, id: user.get('id'), email: user.get('email') };
+}
+
 export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig): Router {
   const {
     jwtSecret,
-    expiresIn = '30m',
+    expiresIn = DEFAULT_TOKEN_LIFETIME,
+    tokenClaims = [],
     emailService,
     passwordReset,
     register,
@@ -64,13 +77,15 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
         throw new HttpError(401, 'Invalid email or password');
       }
 
-      const isMatch = await comparePassword(password, user.password);
+      const isMatch = await comparePassword(password, user.get('password') as string);
       if (!isMatch) {
         throw new HttpError(401, 'Invalid email or password');
       }
 
-      const token = jwt.sign({ id: user.id, email: user.email }, jwtSecret, { expiresIn } as any);
-      res.json({ token, email: user.email, role: user.role });
+      const token = jwt.sign(buildTokenPayload(user, tokenClaims), jwtSecret, {
+        expiresIn,
+      } as jwt.SignOptions);
+      res.json({ token, id: user.get('id'), email: user.get('email'), role: user.get('role') });
     } catch (err) {
       next(err);
     }
@@ -112,7 +127,7 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
           const resetToken = jwt.sign(
             { userId: user.get('id'), purpose: 'password-reset' },
             jwtSecret,
-            { expiresIn: tokenExpiresIn } as any
+            { expiresIn: tokenExpiresIn } as jwt.SignOptions
           );
           const resetLink = `${appBaseUrl}${resetPath}?token=${resetToken}`;
 
