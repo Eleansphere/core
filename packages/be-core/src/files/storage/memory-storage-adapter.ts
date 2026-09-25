@@ -6,7 +6,8 @@ interface StoredObject {
   contentType: string;
 }
 
-const DEFAULT_PUBLIC_BASE_URL = 'https://storage.invalid';
+/** Signed URLs are never served from memory; this only marks them as such. */
+const SIGNED_URL_BASE_WITHOUT_PUBLIC_URL = 'memory://objects';
 
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -17,11 +18,15 @@ async function readAll(stream: Readable): Promise<Buffer> {
 /**
  * Keeps objects in a `Map` — for tests and local development without a bucket
  * (`storage: { adapter: new MemoryStorageAdapter() }`). Everything is lost on restart.
+ *
+ * Without a `publicBaseUrl` there is no public address, so file URLs point at the file service's
+ * own `/api/files/:id`, which streams the bytes. Pass one (e.g. `https://cdn.test`) to exercise
+ * the redirect to a CDN in tests.
  */
 export class MemoryStorageAdapter implements StorageAdapter {
   readonly objects = new Map<string, StoredObject>();
 
-  constructor(private readonly publicBaseUrl: string = DEFAULT_PUBLIC_BASE_URL) {}
+  constructor(private readonly publicBaseUrl?: string) {}
 
   async put(key: string, body: Buffer | Readable, options: StoragePutOptions): Promise<void> {
     const bytes = Buffer.isBuffer(body) ? body : await readAll(body);
@@ -39,11 +44,11 @@ export class MemoryStorageAdapter implements StorageAdapter {
     this.objects.delete(key);
   }
 
-  getPublicUrl(key: string): string {
-    return `${this.publicBaseUrl}/${key}`;
+  getPublicUrl(key: string): string | undefined {
+    return this.publicBaseUrl === undefined ? undefined : `${this.publicBaseUrl}/${key}`;
   }
 
   async getSignedUrl(key: string): Promise<string> {
-    return `${this.publicBaseUrl}/${key}?signed`;
+    return `${this.publicBaseUrl ?? SIGNED_URL_BASE_WITHOUT_PUBLIC_URL}/${key}?signed`;
   }
 }
