@@ -1,13 +1,14 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { CreationAttributes, Model, WhereOptions } from 'sequelize';
-import { OWNER_FIELD, SYSTEM_FIELDS } from '@eleansphere/schema';
+import { OWNER_FIELD, RESERVED_QUERY_PARAMS, SYSTEM_FIELDS } from '@eleansphere/schema';
 import type { QueryConfig } from '@eleansphere/schema';
-import { CrudRouterOptions } from '../types/crud-router';
+import { CrudRouterOptions, CustomFilterResolver } from '../types/crud-router';
 import { HttpError } from '../app/error-handler';
 import { hashPassword, looksHashed } from './hash-password';
 import { AccessGrant, AccessRules, CrudOperation, evaluateAccess } from '../access/access-rules';
 import { combineWhere } from './combine-where';
 import { parseListQuery } from './list-query';
+import type { QueryScalar } from './list-query';
 
 const OWNER_ONLY_ACCESS: AccessRules = { read: 'owner', write: 'owner' };
 
@@ -22,6 +23,33 @@ async function applyHashFields(
     }
   }
   return data;
+}
+
+/**
+ * Every custom filter the query declares needs a resolver, and every resolver a declaration; a
+ * custom filter can't share its name with a column filter or a reserved parameter. Checked when
+ * the router is built, so a mismatch fails at startup rather than on the first request.
+ */
+function assertCustomFilters(
+  modelName: string,
+  query: QueryConfig | undefined,
+  resolvers: Record<string, CustomFilterResolver>
+): void {
+  const declared = Object.keys(query?.customFilters ?? {});
+  const reserved: readonly string[] = RESERVED_QUERY_PARAMS;
+  for (const name of declared) {
+    if (!resolvers[name]) {
+      throw new Error(`${modelName}: custom filter "${name}" is declared without a resolver`);
+    }
+    if (query?.filter?.[name] || reserved.includes(name)) {
+      throw new Error(`${modelName}: custom filter "${name}" clashes with a query parameter`);
+    }
+  }
+  for (const name of Object.keys(resolvers)) {
+    if (!declared.includes(name)) {
+      throw new Error(`${modelName}: resolver for "${name}", which query.customFilters lacks`);
+    }
+  }
 }
 
 function withoutKeys(data: Record<string, unknown>, keys: Iterable<string>) {
@@ -50,7 +78,9 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
     query,
     fields = {},
     readOnlyFields = [],
+    customFilters = {},
   } = options;
+  assertCustomFilters(model.name, query, customFilters);
   const router = Router();
   const accessRules = access ?? (userScoped ? OWNER_ONLY_ACCESS : undefined);
   const resolveUser = authenticate ? [authenticate] : [];
@@ -111,6 +141,15 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
     return entity;
   }
 
+  function resolveCustomFilters(
+    values: Record<string, QueryScalar>,
+    req: Request
+  ): Promise<WhereOptions[]> {
+    return Promise.all(
+      Object.entries(values).map(([name, value]) => customFilters[name](value, req))
+    );
+  }
+
   async function sendQueriedPage(
     req: Request,
     res: Response,
@@ -118,8 +157,9 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
     queryConfig: QueryConfig
   ): Promise<void> {
     const list = parseListQuery(req.query, queryConfig, fields);
+    const customWhere = await resolveCustomFilters(list.customFilters, req);
     const { count, rows } = await model.findAndCountAll({
-      where: combineWhere(scopedWhere, list.where),
+      where: combineWhere(scopedWhere, list.where, ...customWhere),
       order: list.order,
       limit: list.limit,
       offset: list.offset,
@@ -225,7 +265,7 @@ export function createCrudRouter<T extends Model>(options: CrudRouterOptions<T>)
     let data = readClientBody(req, grant);
 
     if (hooks?.beforeUpdate) {
-      data = await hooks.beforeUpdate(data, req);
+      data = await hooks.beforeUpdate(data, req, entity.get({ plain: true }));
     }
     if (hashFields.length) {
       data = await applyHashFields(data, hashFields);

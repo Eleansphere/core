@@ -167,7 +167,7 @@ describe('createCrudRouter — body stripping', () => {
 });
 
 describe('createCrudRouter — partial update', () => {
-  it('PATCH changes only the fields sent, and the hook sees only those', async () => {
+  it('PATCH changes only the fields sent; the hook sees those, and the row as stored', async () => {
     const model = createFakeModel('Item', [{ id: '1', name: 'a', color: 'red' }]);
     const beforeUpdate = vi.fn(async (data: Record<string, unknown>) => data);
     const app = buildApp(model, { hooks: { beforeUpdate } });
@@ -176,7 +176,11 @@ describe('createCrudRouter — partial update', () => {
 
     expect(res.status).toBe(200);
     expect(model.__rows[0]).toEqual(expect.objectContaining({ name: 'a', color: 'blue' }));
-    expect(beforeUpdate).toHaveBeenCalledWith({ color: 'blue' }, expect.anything());
+    expect(beforeUpdate).toHaveBeenCalledWith({ color: 'blue' }, expect.anything(), {
+      id: '1',
+      name: 'a',
+      color: 'red',
+    });
   });
 });
 

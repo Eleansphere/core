@@ -200,6 +200,33 @@ query: {
 Values are checked against the field types. Undeclared parameters, unsortable columns and values of
 the wrong type are `400`. `id`, `ownerId`, `createdAt` and `updatedAt` can be listed too.
 
+A filter that isn't a column — "books currently lent out", "books on this shelf" — is a **custom
+filter**: the query declares its name and value type (`STRING`, `INTEGER`, `BOOLEAN` or
+`DATEONLY`), and `routes` resolves it into a where-clause:
+
+```typescript
+query: { customFilters: { lent: 'BOOLEAN' } },
+
+routes: {
+  book: {
+    customFilters: {
+      // ?lent=true / ?lent=false — the value arrives converted; a promise is fine too
+      lent: async (lent, req) => {
+        const loans = await models.loan.findAll({
+          where: { ownerId: req.user!.id, returnedAt: null },
+          attributes: ['bookId'],
+        });
+        const ids = loans.map((loan) => loan.get('bookId'));
+        return { id: { [lent ? Op.in : Op.notIn]: ids } };
+      },
+    },
+  },
+}
+```
+
+The result is ANDed with the access scope and the other filters. A declared custom filter without a
+resolver (or the other way round), or one named like a column filter, fails at startup.
+
 ### References
 
 ```typescript
@@ -234,13 +261,24 @@ book, enforced by Postgres even under concurrent requests (the second insert is 
 
 `AppConfig.routes[modelName]` adds what doesn't belong in a shared model definition: access
 functions, `hooks` (run after field validation and reference checks), `enrich`, `buildWhere`,
-`beforeDelete`, `middleware`, `protect`.
+`customFilters` (see [List queries](#list-queries)), `beforeDelete`, `middleware`, `protect`.
 
 ```typescript
 routes: {
   book: {
     enrich: (rows) => attachFiles(models.File, storage, 'book', rows, { role: 'cover', as: 'cover' }),
-    buildWhere: (req) => (req.query.shelfId ? { id: { [Op.in]: booksOnShelf(req) } } : {}),
+    // Every list request: books archived by an admin stay hidden.
+    buildWhere: () => ({ archivedAt: null }),
+    hooks: {
+      // `data` holds only the fields sent; `stored` is the row before the update.
+      beforeUpdate: async (data, req, stored) => {
+        const book = { ...stored, ...data };
+        if (book.finishedAt && book.startedAt && book.finishedAt < book.startedAt) {
+          throw new ValidationError([{ path: 'finishedAt', code: 'min' }]);
+        }
+        return data;
+      },
+    },
   },
 }
 ```
@@ -319,7 +357,7 @@ app.use(
     fields: productConfig.fields,                // types for query values
     readOnlyFields: ['stockReserved'],
     hashFields: ['password'],
-    hooks: { beforeCreate: async (data, req) => data, beforeUpdate: async (data, req) => data },
+    hooks: { beforeCreate: async (data, req) => data, beforeUpdate: async (data, req, stored) => data },
     buildWhere: (req) => ({ active: true }),
     enrich: (rows) => attachFiles(models.File, storage, 'Product', rows, { as: 'images' }),
     beforeDelete: async (product, req) => cleanUpImages(product),
@@ -457,6 +495,8 @@ per column. 5xx errors are logged and answered with a generic message.
 - `generateId(prefix)`: `prefix` + 32 hex characters, no separator added (`generateId('bk_')` → `bk_9f…`)
 - `parseListQuery(req.query, queryConfig, fields)`: the list-query parser, for plugin routes
 - `combineWhere(...clauses)`: ANDs where-clauses, skipping empty ones
+- `Op` and the `WhereOptions` type, like `DataTypes` and `Sequelize`: custom filters, access
+  functions and plugins build where-clauses without depending on `sequelize` themselves
 - `parseDuration('15m')`: milliseconds of a `ms`/`s`/`m`/`h`/`d` duration
 - `validateFields` and the field types, re-exported from `@eleansphere/schema`
 - `CoreEntity`: base Sequelize model with `id`, `createdAt`, `updatedAt`; `Model.initModel(sequelize, attributes, options)`

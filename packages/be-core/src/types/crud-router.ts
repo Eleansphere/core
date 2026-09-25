@@ -1,18 +1,31 @@
-import { Model, ModelStatic } from 'sequelize';
+import { Model, ModelStatic, WhereOptions } from 'sequelize';
 import { Request, RequestHandler } from 'express';
 import type { FieldConfig, QueryConfig } from '@eleansphere/schema';
 import type { AccessRules } from '../access/access-rules';
+import type { QueryScalar } from '../utils/list-query';
 
 // `data` is `Record<string, unknown>`, not `T` (the Sequelize entity) — it's the raw request body
 // shape, arbitrary keys, before Sequelize ever sees it.
 export type CrudHook = (
   data: Record<string, unknown>,
-  req: Request
+  req: Request,
+  /** On update, the row as stored before the change; `undefined` on create. */
+  stored?: Record<string, unknown>
 ) => Promise<Record<string, unknown>>;
+
+/** Turns one custom list filter (e.g. `?lent=true`) into a where-clause. */
+export type CustomFilterResolver = (
+  value: QueryScalar,
+  req: Request
+) => WhereOptions | Promise<WhereOptions>;
 
 export type CrudHooks = {
   beforeCreate?: CrudHook;
-  /** Receives only the fields the client sent: updates are partial (PATCH semantics). */
+  /**
+   * Receives only the fields the client sent (updates are partial, PATCH semantics) and, as
+   * `stored`, the row before the change, so a rule spanning several fields can check
+   * `{ ...stored, ...data }`.
+   */
   beforeUpdate?: CrudHook;
 };
 
@@ -38,6 +51,11 @@ export type CrudRouterOptions<T extends Model> = {
   protect?: RequestHandler[];
   /** Extra `where` filter for GET (list), ANDed with the access scope and query filters. */
   buildWhere?: (req: Request) => Record<string, unknown>;
+  /**
+   * One resolver per custom filter the `query` declares (`query.customFilters`): gets the
+   * converted value and the request, returns the where-clause to AND into the list.
+   */
+  customFilters?: Record<string, CustomFilterResolver>;
   /**
    * Sort order for GET (list) without a `query` config, Sequelize's `order` shape. With `query`,
    * ordering comes from `?sort` / `query.defaultSort` instead.

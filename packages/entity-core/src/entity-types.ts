@@ -1,4 +1,5 @@
 import type {
+  CustomFilterType,
   FieldType,
   FieldValidation,
   FilterOperator,
@@ -175,10 +176,35 @@ type FilterValue<Operator, Value> = Operator extends 'eq'
         ? NullFilter
         : never;
 
-/** The filters a list request may send: exactly the columns and operators the query declares. */
-export type ListFilters<F extends Fields, Q> = Q extends { filter: infer Filter }
+type ColumnFilters<F extends Fields, Q> = Q extends { filter: infer Filter }
   ? { [Column in keyof Filter]?: FilterValue<Filter[Column], ColumnValue<F, Column>> }
-  : Record<string, never>;
+  : NoQuery;
+
+/** A custom filter's value, by the type its `query.customFilters` entry declares. */
+interface CustomFilterValues {
+  STRING: string;
+  INTEGER: number;
+  BOOLEAN: boolean;
+  DATEONLY: string;
+}
+
+type CustomFilters<Q> = Q extends { customFilters: infer Custom }
+  ? {
+      [Name in keyof Custom]?: Custom[Name] extends CustomFilterType
+        ? CustomFilterValues[Custom[Name]]
+        : never;
+    }
+  : NoQuery;
+
+/**
+ * The filters a list request may send: exactly the columns and operators the query declares,
+ * plus its custom filters (`query.customFilters`, resolved by the server).
+ */
+export type ListFilters<F extends Fields, Q> = [
+  keyof ColumnFilters<F, Q> | keyof CustomFilters<Q>,
+] extends [never]
+  ? Record<string, never>
+  : ColumnFilters<F, Q> & CustomFilters<Q>;
 
 type SortColumnOf<Q> = Q extends { sort: readonly (infer Column)[] } ? Column & string : never;
 

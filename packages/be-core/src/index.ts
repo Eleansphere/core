@@ -1,5 +1,6 @@
 // Sequelize re-exports (so projects don't need sequelize as a direct dependency)
-export { DataTypes, Sequelize } from 'sequelize';
+export { DataTypes, Op, Sequelize } from 'sequelize';
+export type { WhereOptions } from 'sequelize';
 
 // App
 export { createApp, createCore } from './app/create-app';
@@ -38,7 +39,12 @@ export { validateFields } from '@eleansphere/schema';
 
 // Types
 export { CoreEntity } from './types/core-entity';
-export type { CrudRouterOptions, CrudHook, CrudHooks } from './types/crud-router';
+export type {
+  CrudRouterOptions,
+  CrudHook,
+  CrudHooks,
+  CustomFilterResolver,
+} from './types/crud-router';
 export type { ProjectPlugin } from './types/project-plugin';
 // Side-effect-only for consumers too: this is what makes `req.user` typed on their own Express
 // `Request`, not just be-core's internals — see the file for why the import (not just the type)
@@ -66,7 +72,7 @@ export type {
   MountModelRoutesOptions,
 } from './utils/init-models-from-configs';
 export { parseListQuery } from './utils/list-query';
-export type { ListQuery } from './utils/list-query';
+export type { ListQuery, QueryScalar } from './utils/list-query';
 export { combineWhere } from './utils/combine-where';
 export { parseDuration } from './utils/duration';
 

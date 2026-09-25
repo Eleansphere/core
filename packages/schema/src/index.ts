@@ -12,6 +12,7 @@ export type {
   AccessPolicy,
   AccessConfig,
   FilterOperator,
+  CustomFilterType,
   RangeBound,
   QueryConfig,
   IndexConfig,

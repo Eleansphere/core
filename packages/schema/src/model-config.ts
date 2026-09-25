@@ -35,6 +35,12 @@ export type RangeBound = (typeof RANGE_BOUNDS)[number];
 /** Query parameters with a fixed meaning on every list route; never treated as filters. */
 export const RESERVED_QUERY_PARAMS = ['page', 'limit', 'sort', 'q'] as const;
 
+/**
+ * The value types a custom filter accepts: `?lent=true` is a `BOOLEAN`, `?shelfId=sh_1` a
+ * `STRING`. The value is converted before the server resolves the filter.
+ */
+export type CustomFilterType = 'STRING' | 'INTEGER' | 'BOOLEAN' | 'DATEONLY';
+
 export const DEFAULT_PAGE_LIMIT = 50;
 export const MAX_PAGE_LIMIT = 200;
 
@@ -44,6 +50,12 @@ export const MAX_PAGE_LIMIT = 200;
  */
 export interface QueryConfig {
   filter?: Record<string, FilterOperator>;
+  /**
+   * Filters that aren't a column of the model, such as "books currently lent out": each parameter
+   * name with the type of its value. The server turns each into a where-clause (be-core
+   * `routes[model].customFilters`); a name must not also be a column filter.
+   */
+  customFilters?: Record<string, CustomFilterType>;
   /** Fields `?sort=` may order by. `-` prefix for descending; comma-separate several. */
   sort?: readonly string[];
   /** Order when `?sort` is absent, same syntax, e.g. `'-createdAt'`. */

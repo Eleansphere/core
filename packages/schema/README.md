@@ -44,7 +44,8 @@ Field flags: `required`, `unique`, `default`, `sensitive` (stripped from respons
 
 Model options: `access` (`public` / `auth` / `owner` / `admin` / `{ roles }` per `read` and
 `write`, default `auth`), `userScoped` (= `owner` for both), `query` (whitelisted list filters,
-sorting, search, page limits), `indexes` (including partial ones).
+custom filters the server resolves, sorting, search, page limits), `indexes` (including partial
+ones).
 
 ## validateFields
 

@@ -1,10 +1,12 @@
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
-import { QueryTypes } from 'sequelize';
+import { Op, QueryTypes } from 'sequelize';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { ModelConfig } from '@eleansphere/schema';
 import { createCore, CoreInstance, AppConfig } from './create-app';
+import { ValidationError } from './error-handler';
+import type { CrudHook, CustomFilterResolver } from '../types/crud-router';
 import { createTestSchema, TestSchema, TEST_DATABASE_URL } from '../test-utils/test-database';
 
 const JWT_SECRET = 'integration-test-secret';
@@ -27,6 +29,7 @@ const bookConfig: ModelConfig = {
   },
   query: {
     filter: { readingStatus: 'in', rating: 'range', finishedAt: 'isNull' },
+    customFilters: { lent: 'BOOLEAN' },
     sort: ['title', 'rating'],
     defaultSort: '-createdAt',
     search: ['title'],
@@ -82,6 +85,25 @@ describe('createCore against Postgres', () => {
   let testSchema: TestSchema;
   let core: CoreInstance;
 
+  /** `?lent=true`: books with an active loan; `false`: the rest. Not a column of `book`. */
+  const resolveLent: CustomFilterResolver = async (lent, req) => {
+    const activeLoans = await core.models.loan.findAll({
+      where: { ownerId: req.user?.id, returnedAt: null },
+      attributes: ['bookId'],
+    });
+    const lentIds = activeLoans.map((loan) => loan.get('bookId'));
+    return { id: { [lent ? Op.in : Op.notIn]: lentIds } };
+  };
+
+  /** Needs the stored row: a PATCH may send only one of the two fields. */
+  const rejectFinishedButUnread: CrudHook = async (data, _req, stored) => {
+    const book = { ...stored, ...data };
+    if (book.finishedAt && book.readingStatus !== 'read') {
+      throw new ValidationError([{ path: 'readingStatus', code: 'enum' }]);
+    }
+    return data;
+  };
+
   const baseConfig = (): AppConfig => ({
     databaseUrl: TEST_DATABASE_URL,
     dbSsl: false,
@@ -89,6 +111,12 @@ describe('createCore against Postgres', () => {
     jwtSecret: JWT_SECRET,
     modelConfigs: [bookConfig, loanConfig, noteConfig, announcementConfig, userConfig],
     auth: { modelName: 'user', tokenClaims: ['role'] },
+    routes: {
+      book: {
+        customFilters: { lent: resolveLent },
+        hooks: { beforeUpdate: rejectFinishedButUnread },
+      },
+    },
   });
 
   const createBook = (token: string, body: Record<string, unknown>) =>
@@ -214,6 +242,21 @@ describe('createCore against Postgres', () => {
       ]);
     });
 
+    it('gives the update hook the stored row, for rules spanning several fields', async () => {
+      const { body: book } = await createBook(ALICE, {
+        title: 'Finished',
+        readingStatus: 'read',
+        finishedAt: '2026-09-01',
+      });
+
+      const res = await request(core.app)
+        .patch(`/api/books/${book.id}`)
+        .set('Authorization', ALICE)
+        .send({ readingStatus: 'want' });
+      expect(res.status).toBe(400);
+      expect(res.body.issues).toEqual([{ path: 'readingStatus', code: 'enum' }]);
+    });
+
     it('PATCH validates and changes only the fields sent', async () => {
       const { body: book } = await createBook(ALICE, { title: 'Hyperion', rating: 3 });
 
@@ -279,6 +322,34 @@ describe('createCore against Postgres', () => {
 
       const secondPage = await listBooks({ sort: 'title', page: '2', limit: '3' });
       expect(titlesOf(secondPage)).toEqual(['Hyperion']);
+    });
+
+    it('resolves custom filters on the server', async () => {
+      const { body: hyperion } = await listBooks({ q: 'Hyperion' });
+      const lent = await request(core.app)
+        .post('/api/loans')
+        .set('Authorization', CAROL)
+        .send({ bookId: hyperion.data[0].id });
+      expect(lent.status).toBe(201);
+
+      expect(titlesOf(await listBooks({ lent: 'true' }))).toEqual(['Hyperion']);
+      expect(titlesOf(await listBooks({ lent: 'false', sort: 'title' }))).toEqual([
+        '100% Pure',
+        'Dune',
+        'Dune Messiah',
+      ]);
+      expect(titlesOf(await listBooks({ lent: 'false', q: 'messiah' }))).toEqual(['Dune Messiah']);
+      expect((await listBooks({ lent: 'maybe' })).status).toBe(400);
+    });
+
+    it('refuses to start when a custom filter has no resolver, or a resolver no filter', async () => {
+      await expect(createCore({ ...baseConfig(), routes: {} })).rejects.toThrow(
+        /book: custom filter "lent" is declared without a resolver/
+      );
+      const extraResolver = { customFilters: { lent: resolveLent, shelfId: resolveLent } };
+      await expect(
+        createCore({ ...baseConfig(), routes: { book: extraResolver } })
+      ).rejects.toThrow(/book: resolver for "shelfId"/);
     });
 
     it('rejects parameters and sorts the config does not declare', async () => {

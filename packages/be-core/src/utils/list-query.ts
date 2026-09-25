@@ -15,8 +15,16 @@ type QueryParams = Request['query'];
 type QueryValue = QueryParams[string];
 type FilterParser = (name: string, field: FieldConfig | undefined, raw: QueryValue) => unknown;
 
+/** A query-string value converted to its field's type. */
+export type QueryScalar = string | number | boolean;
+
 export interface ListQuery {
   where: WhereOptions;
+  /**
+   * The custom filters the request sent (`QueryConfig.customFilters`), by name, with converted
+   * values. Not part of `where`: the server resolves them.
+   */
+  customFilters: Record<string, QueryScalar>;
   order: OrderItem[];
   page: number;
   limit: number;
@@ -78,7 +86,7 @@ function parsePositiveInteger(name: string, raw: QueryValue, fallback: number): 
 }
 
 /** Converts a query-string value to the field's type, rejecting what the column could never hold. */
-function coerceValue(name: string, field: FieldConfig | undefined, raw: string): unknown {
+function coerceValue(name: string, field: FieldConfig | undefined, raw: string): QueryScalar {
   switch (field?.type) {
     case 'INTEGER':
       if (!INTEGER_PATTERN.test(raw)) throw badQuery(`"${name}" must be an integer`);
@@ -107,7 +115,7 @@ function coerceValue(name: string, field: FieldConfig | undefined, raw: string):
   }
 }
 
-function parseEquals(name: string, field: FieldConfig | undefined, raw: QueryValue): unknown {
+function parseEquals(name: string, field: FieldConfig | undefined, raw: QueryValue): QueryScalar {
   return coerceValue(name, field, requireSingleValue(name, raw));
 }
 
@@ -150,14 +158,24 @@ function parseFilters(
   fields: Record<string, FieldConfig>
 ): WhereOptions {
   const allowedFilters = config.filter ?? {};
+  const customFilterNames = new Set(Object.keys(config.customFilters ?? {}));
   const where: Record<string, unknown> = {};
   for (const [name, raw] of Object.entries(query)) {
-    if (isReservedParam(name)) continue;
+    if (isReservedParam(name) || customFilterNames.has(name)) continue;
     const operator = allowedFilters[name];
     if (!operator) throw badQuery(`Unknown query parameter "${name}"`);
     where[name] = FILTER_PARSERS[operator](name, fields[name], raw);
   }
   return where as WhereOptions;
+}
+
+function parseCustomFilters(query: QueryParams, config: QueryConfig): Record<string, QueryScalar> {
+  const values: Record<string, QueryScalar> = {};
+  for (const [name, type] of Object.entries(config.customFilters ?? {})) {
+    const raw = query[name];
+    if (raw !== undefined) values[name] = parseEquals(name, { type }, raw);
+  }
+  return values;
 }
 
 function escapeLikePattern(text: string): string {
@@ -216,6 +234,7 @@ export function parseListQuery(
 
   return {
     where: combineWhere(parseFilters(query, config, knownFields), parseSearch(query.q, config)),
+    customFilters: parseCustomFilters(query, config),
     order: parseSort(query.sort, config),
     page,
     limit,

@@ -21,6 +21,7 @@ const config: QueryConfig = {
     finishedAt: 'isNull',
     createdAt: 'range',
   },
+  customFilters: { lent: 'BOOLEAN', shelfId: 'STRING' },
   sort: ['title', 'rating'],
   defaultSort: '-createdAt',
   search: ['title'],
@@ -71,6 +72,25 @@ describe('parseListQuery — filters', () => {
     [{ rating: { between: '1' } }, /is not a range bound/],
     [{ finishedAt: 'null' }, /finishedAt\[isNull\]=true or false/],
     [{ isFavorite: ['true', 'false'] }, /must be a single value/],
+  ])('rejects %j', (query, message) => {
+    expect(() => parse(query)).toThrow(message);
+  });
+});
+
+describe('parseListQuery — custom filters', () => {
+  it('hands them over converted, outside the where-clause', () => {
+    const list = parse({ lent: 'false', shelfId: 'sh_1', rating: '4' });
+    expect(list.customFilters).toEqual({ lent: false, shelfId: 'sh_1' });
+    expect(list.where).toEqual({ rating: 4 });
+  });
+
+  it('leaves out the ones not sent', () => {
+    expect(parse({}).customFilters).toEqual({});
+  });
+
+  it.each([
+    [{ lent: 'maybe' }, /"lent" must be true or false/],
+    [{ lent: ['true', 'false'] }, /"lent" must be a single value/],
   ])('rejects %j', (query, message) => {
     expect(() => parse(query)).toThrow(message);
   });

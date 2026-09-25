@@ -120,7 +120,9 @@ function createValidationHook(fields: Record<string, FieldConfig>, mode: Validat
 }
 
 function chainHooks(first: CrudHook, second: CrudHook | undefined): CrudHook {
-  return second ? async (data, req) => second(await first(data, req), req) : first;
+  return second
+    ? async (data, req, stored) => second(await first(data, req, stored), req, stored)
+    : first;
 }
 
 export function initModelsFromConfigs(

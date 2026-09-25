@@ -22,6 +22,7 @@ const bookEntity = defineEntity({
   },
   query: {
     filter: { readingStatus: 'in', rating: 'range', finishedAt: 'isNull' },
+    customFilters: { lent: 'BOOLEAN' },
     sort: ['title', 'rating'],
     search: ['title'],
   },
@@ -74,6 +75,7 @@ describe('defineEntity — inferred types', () => {
           readingStatus: ['read', 'reading'],
           rating: { gte: 3 },
           finishedAt: { isNull: true },
+          lent: false,
         },
         sort: ['-rating', 'title'],
         q: 'dune',
@@ -83,6 +85,8 @@ describe('defineEntity — inferred types', () => {
       books.getAll({ filter: { title: 'Dune' } });
       // @ts-expect-error — not a readingStatus value
       books.getAll({ filter: { readingStatus: 'burned' } });
+      // @ts-expect-error — a custom filter takes the value type it declares
+      books.getAll({ filter: { lent: 'no' } });
       // @ts-expect-error — `finishedAt` is not sortable
       books.getAll({ sort: 'finishedAt' });
     };
@@ -148,7 +152,7 @@ describe('defineEntity — service', () => {
     const books = new bookEntity.Service('http://api', () => 'token-1');
 
     await books.getAll({
-      filter: { readingStatus: ['read', 'reading'], rating: { gte: 3 } },
+      filter: { readingStatus: ['read', 'reading'], rating: { gte: 3 }, lent: false },
       sort: ['-rating', 'title'],
       page: 2,
     });
@@ -160,6 +164,7 @@ describe('defineEntity — service', () => {
       sort: '-rating,title',
       readingStatus: 'read,reading',
       'rating[gte]': '3',
+      lent: 'false',
     });
     expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ Authorization: 'Bearer token-1' });
   });

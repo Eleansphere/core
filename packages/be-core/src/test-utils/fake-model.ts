@@ -16,7 +16,8 @@ function attachInstanceMethods(row: Row, rows: Row[]): Row {
     const { toJSON, update, destroy, get, ...plain } = row;
     return plain;
   };
-  row.get = (key: string) => row[key];
+  // Like Sequelize: `get('name')` reads one value, `get({ plain: true })` copies them all.
+  row.get = (key: string | { plain: true }) => (typeof key === 'string' ? row[key] : row.toJSON());
   row.update = async (data: Row) => {
     Object.assign(row, data);
     return row;

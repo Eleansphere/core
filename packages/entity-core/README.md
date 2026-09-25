@@ -112,7 +112,9 @@ await books.update(id, { rating: 5 });
 
 Filters and sort columns are exactly what the entity's `query` declares: an undeclared filter, an
 unknown ENUM value or an unsortable column is a compile error. Filter values: a value (`eq`), a
-list (`in`), `{ gte, lte, gt, lt }` (`range`), `{ isNull: boolean }` (`isNull`).
+list (`in`), `{ gte, lte, gt, lt }` (`range`), `{ isNull: boolean }` (`isNull`). A custom filter
+(`query: { customFilters: { lent: 'BOOLEAN' } }`, resolved by the server) takes a value of its
+declared type: `filter: { lent: false }`.
 `toListQueryParams` does the serialization, for hand-written services.
 
 ### Extending a service
