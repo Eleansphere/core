@@ -4,7 +4,11 @@ import { Model } from 'sequelize';
 import { HttpError } from '../app/error-handler';
 
 const PASSWORD_RESET_PURPOSE = 'password-reset';
+const EMAIL_VERIFICATION_PURPOSE = 'email-verification';
 const PASSWORD_VERSION_LENGTH = 16;
+
+/** The `typ` claim of an access token. Tokens issued for anything else never pass as one. */
+export const ACCESS_TOKEN_TYPE = 'access';
 
 export const USER_ID_FIELD = 'id';
 export const USER_EMAIL_FIELD = 'email';
@@ -17,7 +21,7 @@ interface PasswordResetClaims {
   pwv: string;
 }
 
-/** Access token: `id`, `email` and the configured `tokenClaims` columns of `user`. */
+/** Access token: `id`, `email`, `typ: 'access'` and the configured `tokenClaims` of `user`. */
 export function signAccessToken(
   user: Model,
   tokenClaims: readonly string[],
@@ -29,6 +33,7 @@ export function signAccessToken(
     ...claims,
     id: user.get(USER_ID_FIELD),
     email: user.get(USER_EMAIL_FIELD),
+    typ: ACCESS_TOKEN_TYPE,
   };
   return jwt.sign(payload, jwtSecret, { expiresIn } as jwt.SignOptions);
 }
@@ -75,4 +80,50 @@ export function readPasswordResetToken(token: string, jwtSecret: string): Passwo
 /** Throws 400 when the password changed since the token was issued (including by this token). */
 export function assertResetTokenStillValid(claims: PasswordResetClaims, user: Model): void {
   if (claims.pwv !== passwordVersion(user)) throw invalidResetToken();
+}
+
+interface EmailVerificationClaims {
+  sub: string;
+  purpose: string;
+  /** The address the link was sent to: a token for an earlier address verifies nothing. */
+  email: string;
+}
+
+export function signEmailVerificationToken(
+  user: Model,
+  jwtSecret: string,
+  expiresIn: string
+): string {
+  const claims: EmailVerificationClaims = {
+    sub: String(user.get(USER_ID_FIELD)),
+    purpose: EMAIL_VERIFICATION_PURPOSE,
+    email: String(user.get(USER_EMAIL_FIELD)),
+  };
+  return jwt.sign(claims, jwtSecret, { expiresIn } as jwt.SignOptions);
+}
+
+function invalidVerificationToken(): HttpError {
+  return new HttpError(400, 'Invalid or expired verification link');
+}
+
+/** The claims of a valid, unexpired e-mail verification token; throws 400 otherwise. */
+export function readEmailVerificationToken(
+  token: string,
+  jwtSecret: string
+): EmailVerificationClaims {
+  let claims: EmailVerificationClaims;
+  try {
+    claims = jwt.verify(token, jwtSecret) as EmailVerificationClaims;
+  } catch {
+    throw invalidVerificationToken();
+  }
+  if (claims.purpose !== EMAIL_VERIFICATION_PURPOSE || !claims.sub || !claims.email) {
+    throw invalidVerificationToken();
+  }
+  return claims;
+}
+
+/** Throws 400 when the account's address is no longer the one the link was sent to. */
+export function assertVerificationTokenMatches(claims: EmailVerificationClaims, user: Model): void {
+  if (claims.email !== user.get(USER_EMAIL_FIELD)) throw invalidVerificationToken();
 }

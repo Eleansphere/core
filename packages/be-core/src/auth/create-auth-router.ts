@@ -1,5 +1,5 @@
 import { Router, Request, Response, RequestHandler } from 'express';
-import { Model, ModelStatic } from 'sequelize';
+import { Model, ModelStatic, Op } from 'sequelize';
 import { validateFields } from '@eleansphere/schema';
 import type { FieldConfig, ValidationMode } from '@eleansphere/schema';
 import { HttpError, ValidationError } from '../app/error-handler';
@@ -7,12 +7,21 @@ import { createVerifyToken } from './create-verify-token';
 import { EmailService, EmailTemplateFunction } from '../email/email-types';
 import { generateId } from '../utils/generate-id';
 import { hashPassword, comparePassword } from '../utils/hash-password';
-import { createRateLimiter, DEFAULT_AUTH_RATE_LIMIT, RateLimitConfig } from './rate-limiter';
+import {
+  createRateLimiter,
+  DEFAULT_ACCOUNT_RATE_LIMIT,
+  DEFAULT_AUTH_RATE_LIMIT,
+  RateLimitConfig,
+  routeKey,
+} from './rate-limiter';
 import type { RefreshTokenStore } from './refresh-tokens';
 import {
   assertResetTokenStillValid,
+  assertVerificationTokenMatches,
+  readEmailVerificationToken,
   readPasswordResetToken,
   signAccessToken,
+  signEmailVerificationToken,
   signPasswordResetToken,
   USER_EMAIL_FIELD,
   USER_ID_FIELD,
@@ -26,7 +35,21 @@ export interface PasswordResetConfig {
   resetPath?: string;
   /** Default `1h`. */
   tokenExpiresIn?: string;
-  template: EmailTemplateFunction<{ resetLink: string }>;
+  /** `user` is the account as JSON (sensitive fields stripped), e.g. for its language. */
+  template: EmailTemplateFunction<{ resetLink: string; user: Record<string, unknown> }>;
+}
+
+export interface EmailVerificationConfig {
+  /** Frontend origin the link points to, e.g. `https://app.example.com`. */
+  appBaseUrl: string;
+  /** Frontend route receiving `?token=`. Default `/verify-email`. */
+  verifyPath?: string;
+  /** Default `7d`. */
+  tokenExpiresIn?: string;
+  /** User column set to the time the address was verified. Default `emailVerifiedAt`. */
+  field?: string;
+  /** `user` is the account as JSON (sensitive fields stripped), e.g. for its language. */
+  template: EmailTemplateFunction<{ verifyLink: string; user: Record<string, unknown> }>;
 }
 
 export interface RegisterConfig {
@@ -51,6 +74,12 @@ export interface AuthConfig {
   emailService?: EmailService;
   /** Mounts `POST /forgot-password` and `POST /reset-password`; needs `emailService`. */
   passwordReset?: PasswordResetConfig;
+  /**
+   * Sends every new account a link that confirms its address, and mounts `POST /verify-email`
+   * (`{ token }`) and `POST /verification-email` (sends the signed-in user a new link). Needs
+   * `emailService`.
+   */
+  emailVerification?: EmailVerificationConfig;
   /** Mounts `POST /register`. */
   register?: RegisterConfig;
   /** Mounts `POST /change-password`. */
@@ -63,6 +92,13 @@ export interface AuthConfig {
   beforeDeleteAccount?: (user: Model) => Promise<void>;
   /** Limits login, registration, password and account-deletion attempts per client. */
   rateLimit?: RateLimitConfig | 'off';
+  /**
+   * Limits failed logins per account (by e-mail, from any client) and reset e-mails per address.
+   * Default {@link DEFAULT_ACCOUNT_RATE_LIMIT}; `'off'` when `rateLimit` is.
+   */
+  accountRateLimit?: RateLimitConfig | 'off';
+  /** bcrypt cost for new password hashes. Default 12. */
+  passwordHashRounds?: number;
 }
 
 export interface SessionResponse {
@@ -78,6 +114,14 @@ export interface SessionResponse {
 const DEFAULT_ACCESS_TOKEN_LIFETIME = '30m';
 const DEFAULT_RESET_PATH = '/reset-password';
 const DEFAULT_RESET_TOKEN_LIFETIME = '1h';
+const DEFAULT_VERIFY_PATH = '/verify-email';
+const DEFAULT_VERIFICATION_TOKEN_LIFETIME = '7d';
+const DEFAULT_VERIFIED_AT_FIELD = 'emailVerifiedAt';
+/** New verification links per account per hour. */
+const VERIFICATION_EMAIL_RATE_LIMIT: RateLimitConfig = { windowMs: 60 * 60 * 1000, max: 5 };
+/** bcrypt reads only the first 72 bytes of a password: anything longer would be cut silently. */
+export const PASSWORD_MAX_BYTES = 72;
+const LIKE_SPECIAL_CHARACTERS = /[\\%_]/g;
 const ROLE_FIELD = 'role';
 const CREDENTIAL_FIELDS = [USER_EMAIL_FIELD, USER_PASSWORD_FIELD];
 const RESET_LINK_SENT_MESSAGE = 'If the email exists, a reset link has been sent';
@@ -116,6 +160,30 @@ function invalidCredentials(): HttpError {
   return new HttpError(401, 'Invalid email or password');
 }
 
+/** E-mail addresses are compared and stored trimmed and in lower case. */
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function normalizedEmailOf(body: unknown): string {
+  const email = (body as Record<string, unknown> | undefined)?.[USER_EMAIL_FIELD];
+  return typeof email === 'string' ? normalizeEmail(email) : '';
+}
+
+/** Matches the address whatever its letter case, including accounts stored before lower case. */
+function emailWhere(email: string) {
+  const pattern = normalizeEmail(email).replace(LIKE_SPECIAL_CHARACTERS, '\\$&');
+  return { [USER_EMAIL_FIELD]: { [Op.iLike]: pattern } };
+}
+
+function assertPasswordFitsHash(password: string, path: string): void {
+  if (Buffer.byteLength(password, 'utf8') > PASSWORD_MAX_BYTES) {
+    throw new ValidationError([
+      { path, code: 'maxLength', params: { maxLength: PASSWORD_MAX_BYTES } },
+    ]);
+  }
+}
+
 export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig): Router {
   const {
     jwtSecret,
@@ -131,14 +199,40 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
     deleteAccount,
     beforeDeleteAccount,
     rateLimit = DEFAULT_AUTH_RATE_LIMIT,
+    accountRateLimit = DEFAULT_ACCOUNT_RATE_LIMIT,
+    emailVerification,
+    passwordHashRounds,
   } = config;
   if (passwordReset && !emailService) {
     throw new Error('auth.passwordReset needs an email service: set AppConfig.email');
   }
+  if (emailVerification && !emailService) {
+    throw new Error('auth.emailVerification needs an email service: set AppConfig.email');
+  }
 
   const router = Router();
   const requireUser = createVerifyToken(jwtSecret);
-  const limitAttempts: RequestHandler[] = rateLimit === 'off' ? [] : [createRateLimiter(rateLimit)];
+  const limitsOff = rateLimit === 'off';
+  const limitAttempts: RequestHandler[] = limitsOff ? [] : [createRateLimiter(rateLimit)];
+  const accountLimitsOff = limitsOff || accountRateLimit === 'off';
+  /** Per account, from any client: by the e-mail in the body, per route. */
+  function limitPerAccount(options: { failuresOnly: boolean }): RequestHandler[] {
+    if (accountLimitsOff) return [];
+    return [
+      createRateLimiter({
+        ...accountRateLimit,
+        keyOf: (req) => `account:${routeKey(req)}:${normalizedEmailOf(req.body)}`,
+        skipSuccessfulRequests: options.failuresOnly,
+      }),
+    ];
+  }
+  const hash = (password: string) => hashPassword(password, passwordHashRounds);
+  /**
+   * Compared against when the e-mail is unknown, so a login takes as long whether the account
+   * exists or not. Made on first use: hashing at a real cost takes a moment.
+   */
+  let dummyHash: Promise<string> | undefined;
+  const dummyPasswordHash = () => (dummyHash ??= hash('no account has this password'));
 
   function assertValid(data: Record<string, unknown>, fieldNames: string[], mode: ValidationMode) {
     const rules = Object.fromEntries(
@@ -150,6 +244,7 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
 
   /** Validates a new password against the `password` field rules, reported under `clientField`. */
   function assertValidNewPassword(newPassword: string, clientField: string) {
+    assertPasswordFitsHash(newPassword, clientField);
     try {
       assertValid({ [USER_PASSWORD_FIELD]: newPassword }, [USER_PASSWORD_FIELD], 'create');
     } catch (err) {
@@ -170,6 +265,10 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
     return comparePassword(password, String(user.get(USER_PASSWORD_FIELD)));
   }
 
+  function findUserByEmail(email: string): Promise<Model | null> {
+    return UserModel.findOne({ where: emailWhere(email) });
+  }
+
   async function assertPasswordMatches(user: Model, password: string): Promise<void> {
     if (!(await passwordMatches(user, password))) throw new HttpError(401, 'Incorrect password');
   }
@@ -188,17 +287,81 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
 
   /** Sets a new password and logs every existing session out. */
   async function replacePassword(user: Model, newPassword: string): Promise<void> {
-    await user.update({ [USER_PASSWORD_FIELD]: await hashPassword(newPassword) });
+    await user.update({ [USER_PASSWORD_FIELD]: await hash(newPassword) });
     await refreshTokens?.revokeAllForUser(String(user.get(USER_ID_FIELD)));
+  }
+
+  /** Sends the user a link that confirms their address; a failure is only logged. */
+  let sendVerificationEmail: ((user: Model) => void) | undefined;
+
+  if (emailVerification && emailService) {
+    const {
+      appBaseUrl,
+      verifyPath = DEFAULT_VERIFY_PATH,
+      tokenExpiresIn = DEFAULT_VERIFICATION_TOKEN_LIFETIME,
+      field = DEFAULT_VERIFIED_AT_FIELD,
+      template,
+    } = emailVerification;
+    const mailer = emailService;
+
+    sendVerificationEmail = (user) => {
+      const token = signEmailVerificationToken(user, jwtSecret, tokenExpiresIn);
+      const verifyLink = `${appBaseUrl}${verifyPath}?token=${encodeURIComponent(token)}`;
+      mailer
+        .send({
+          to: String(user.get(USER_EMAIL_FIELD)),
+          ...template({ verifyLink, user: user.toJSON() as Record<string, unknown> }),
+        })
+        .catch(() => undefined);
+    };
+    const send = sendVerificationEmail;
+
+    router.post(
+      '/verify-email',
+      ...limitAttempts,
+      route(async (req, res) => {
+        const { token } = requireStrings(req.body, ['token']);
+        const claims = readEmailVerificationToken(token, jwtSecret);
+        const user = await UserModel.findByPk(claims.sub);
+        if (!user) throw new HttpError(400, 'Invalid or expired verification link');
+        assertVerificationTokenMatches(claims, user);
+        if (!user.get(field)) await user.update({ [field]: new Date() });
+        res.json(user.toJSON());
+      })
+    );
+
+    const limitResends: RequestHandler[] = limitsOff
+      ? []
+      : [
+          createRateLimiter({
+            ...VERIFICATION_EMAIL_RATE_LIMIT,
+            keyOf: (req) => `verification-email:${req.user?.id}`,
+          }),
+        ];
+    router.post(
+      '/verification-email',
+      requireUser,
+      ...limitResends,
+      route(async (req, res) => {
+        const user = await findUserOrThrow(req.user!.id);
+        if (!user.get(field)) send(user);
+        res.status(202).send();
+      })
+    );
   }
 
   router.post(
     '/login',
     ...limitAttempts,
+    ...limitPerAccount({ failuresOnly: true }),
     route(async (req, res) => {
       const { email, password } = requireStrings(req.body, CREDENTIAL_FIELDS);
-      const user = await UserModel.findOne({ where: { [USER_EMAIL_FIELD]: email } });
-      if (!user || !(await passwordMatches(user, password))) throw invalidCredentials();
+      const user = await findUserByEmail(email);
+      if (!user) {
+        await comparePassword(password, await dummyPasswordHash());
+        throw invalidCredentials();
+      }
+      if (!(await passwordMatches(user, password))) throw invalidCredentials();
       res.json(await startSession(user));
     })
   );
@@ -246,12 +409,14 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
       ...limitAttempts,
       route(async (req, res) => {
         const credentials = requireStrings(req.body, CREDENTIAL_FIELDS);
-        const data = pickPresent(req.body, registrationFields);
+        const data = {
+          ...pickPresent(req.body, registrationFields),
+          [USER_EMAIL_FIELD]: normalizeEmail(credentials[USER_EMAIL_FIELD]),
+        };
         assertValid(data, registrationFields, 'create');
+        assertPasswordFitsHash(credentials[USER_PASSWORD_FIELD], USER_PASSWORD_FIELD);
 
-        const existing = await UserModel.findOne({
-          where: { [USER_EMAIL_FIELD]: credentials[USER_EMAIL_FIELD] },
-        });
+        const existing = await findUserByEmail(credentials[USER_EMAIL_FIELD]);
         if (existing) {
           throw new HttpError(409, 'A user with this email already exists', [
             { path: USER_EMAIL_FIELD, code: 'unique' },
@@ -262,8 +427,9 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
           ...register.defaults,
           ...data,
           [USER_ID_FIELD]: generateId(register.idPrefix),
-          [USER_PASSWORD_FIELD]: await hashPassword(credentials[USER_PASSWORD_FIELD]),
+          [USER_PASSWORD_FIELD]: await hash(credentials[USER_PASSWORD_FIELD]),
         });
+        sendVerificationEmail?.(user);
         res.status(201).json(await startSession(user));
       })
     );
@@ -330,15 +496,21 @@ export function createAuthRouter(UserModel: ModelStatic<any>, config: AuthConfig
     router.post(
       '/forgot-password',
       ...limitAttempts,
+      ...limitPerAccount({ failuresOnly: false }),
       route(async (req, res) => {
         const { email } = requireStrings(req.body, [USER_EMAIL_FIELD]);
-        const user = await UserModel.findOne({ where: { [USER_EMAIL_FIELD]: email } });
+        const user = await findUserByEmail(email);
         if (user) {
           const resetToken = signPasswordResetToken(user, jwtSecret, tokenExpiresIn);
           const resetLink = `${appBaseUrl}${resetPath}?token=${encodeURIComponent(resetToken)}`;
           // Not awaited: neither timing nor a delivery error may reveal whether the email exists.
-          // The email service logs failures.
-          mailer.send({ to: email, ...template({ resetLink }) }).catch(() => undefined);
+          // The email service logs failures. Sent to the stored address, never to what was typed.
+          mailer
+            .send({
+              to: String(user.get(USER_EMAIL_FIELD)),
+              ...template({ resetLink, user: user.toJSON() as Record<string, unknown> }),
+            })
+            .catch(() => undefined);
         }
         res.json({ message: RESET_LINK_SENT_MESSAGE });
       })

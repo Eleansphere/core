@@ -21,6 +21,7 @@ const userConfig: ModelConfig = {
     password: { type: 'STRING', required: true, minLength: 8, sensitive: true },
     displayName: { type: 'STRING', required: true, minLength: 2 },
     role: { type: 'ENUM', values: ['user', 'admin'], default: 'user', readOnly: true },
+    emailVerifiedAt: { type: 'DATE', readOnly: true },
   },
 };
 
@@ -72,10 +73,19 @@ describe('auth against Postgres', () => {
         profileFields: ['displayName'],
         deleteAccount: true,
         rateLimit: 'off',
+        passwordHashRounds: 4,
+        emailVerification: {
+          appBaseUrl: 'https://app.test',
+          template: ({ verifyLink, user }) => ({
+            subject: `Confirm your address, ${String(user.displayName)}`,
+            html: `<a href="${verifyLink}">Confirm</a>`,
+            text: verifyLink,
+          }),
+        },
         passwordReset: {
           appBaseUrl: 'https://app.test',
-          template: ({ resetLink }) => ({
-            subject: 'Reset your password',
+          template: ({ resetLink, user }) => ({
+            subject: `Reset your password, ${String(user.displayName)}`,
             html: `<a href="${resetLink}">Reset</a>`,
             text: resetLink,
           }),
@@ -141,11 +151,17 @@ describe('auth against Postgres', () => {
 
     const forgot = (email: string) => api().post('/api/auth/forgot-password').send({ email });
     expect((await forgot('nobody@test.cz')).status).toBe(200);
-    expect((await forgot('forgot@test.cz')).status).toBe(200);
+    expect((await forgot(' Forgot@Test.cz ')).status).toBe(200);
     await vi.waitFor(() => expect(outbox.sent).toHaveLength(1));
-    expect(outbox.sent[0]).toMatchObject({ to: 'forgot@test.cz', from: SENDER });
+    expect(outbox.sent[0]).toMatchObject({
+      to: 'forgot@test.cz',
+      from: SENDER,
+      subject: 'Reset your password, Reader',
+    });
 
     const token = new URL(outbox.sent[0].text ?? '').searchParams.get('token') ?? '';
+    const asAccessToken = await api().get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+    expect(asAccessToken.status).toBe(401);
     const reset = () =>
       api().post('/api/auth/reset-password').send({ token, newPassword: 'brand-new-secret' });
 
@@ -197,5 +213,96 @@ describe('auth against Postgres', () => {
     expect([Number(remaining.books), Number(remaining.loans)]).toEqual([0, 0]);
     expect(storage.objects.size).toBe(storedObjectsBefore - 1);
     expect((await login('leaving@test.cz')).status).toBe(401);
+  });
+
+  it('keeps e-mail addresses in lower case and finds them in any case', async () => {
+    const registered = await register('  Mixed.Case@Test.cz ');
+    expect(registered.status).toBe(201);
+    expect(registered.body.email).toBe('mixed.case@test.cz');
+
+    expect((await register('mixed.case@TEST.cz')).status).toBe(409);
+    expect((await login('MIXED.case@test.cz')).status).toBe(200);
+  });
+
+  it('still signs in an account stored in mixed case before addresses were normalized', async () => {
+    const { body: session } = await register('legacy@test.cz');
+    await core.sequelize.query(`UPDATE users SET email = 'Legacy@Test.cz' WHERE id = :id`, {
+      replacements: { id: session.id },
+    });
+
+    expect((await login('legacy@test.cz')).status).toBe(200);
+    expect((await register('LEGACY@test.cz')).status).toBe(409);
+  });
+
+  it('refuses a password longer than bcrypt reads', async () => {
+    const res = await api()
+      .post('/api/auth/register')
+      .send({ email: 'long@test.cz', password: 'ž'.repeat(40), displayName: 'Reader' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.issues).toEqual([
+      { path: 'password', code: 'maxLength', params: { maxLength: 72 } },
+    ]);
+  });
+
+  it('confirms a new address with the link it e-mails, once the address is current', async () => {
+    outbox.clear();
+    const { body: session } = await register('verify@test.cz');
+    expect(session.user.emailVerifiedAt ?? null).toBeNull();
+    await vi.waitFor(() => expect(outbox.sent).toHaveLength(1));
+    expect(outbox.sent[0]).toMatchObject({
+      to: 'verify@test.cz',
+      subject: 'Confirm your address, Reader',
+    });
+
+    const link = new URL(outbox.sent[0].text ?? '');
+    expect(link.origin + link.pathname).toBe('https://app.test/verify-email');
+    const token = link.searchParams.get('token') ?? '';
+    const asAccessToken = await api().get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+    expect(asAccessToken.status).toBe(401);
+
+    const verified = await api().post('/api/auth/verify-email').send({ token });
+    expect(verified.status).toBe(200);
+    expect(verified.body.emailVerifiedAt).toBeTypeOf('string');
+    expect(verified.body).not.toHaveProperty('password');
+
+    const again = await api().post('/api/auth/verify-email').send({ token });
+    expect(again.status).toBe(200);
+    expect(again.body.emailVerifiedAt).toBe(verified.body.emailVerifiedAt);
+
+    const bogus = await api().post('/api/auth/verify-email').send({ token: 'not-a-token' });
+    expect(bogus.status).toBe(400);
+  });
+
+  it('sends a new verification link to an unverified account only', async () => {
+    const { body: session } = await register('resend@test.cz');
+    await vi.waitFor(() => expect(outbox.sent.some((m) => m.to === 'resend@test.cz')).toBe(true));
+    outbox.clear();
+    const resend = () =>
+      api()
+        .post('/api/auth/verification-email')
+        .set('Authorization', `Bearer ${session.token}`)
+        .send({});
+
+    expect((await api().post('/api/auth/verification-email').send({})).status).toBe(401);
+    expect((await resend()).status).toBe(202);
+    await vi.waitFor(() => expect(outbox.sent).toHaveLength(1));
+
+    const token = new URL(outbox.sent[0].text ?? '').searchParams.get('token') ?? '';
+    await api().post('/api/auth/verify-email').send({ token });
+    outbox.clear();
+    expect((await resend()).status).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(outbox.sent).toHaveLength(0);
+  });
+
+  it('sends security headers and no X-Powered-By', async () => {
+    const res = await api().get('/');
+
+    expect(res.headers['x-powered-by']).toBeUndefined();
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers['content-security-policy']).toContain("default-src 'none'");
+    expect(res.headers['strict-transport-security']).toMatch(/^max-age=\d+/);
   });
 });

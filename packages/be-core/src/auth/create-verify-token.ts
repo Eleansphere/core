@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { HttpError } from '../app/error-handler';
 import { AuthenticatedUser } from '../types/express-request';
 import { hasAnyRole } from '../access/access-rules';
+import { ACCESS_TOKEN_TYPE } from './tokens';
 
 const BEARER_SCHEME = 'Bearer';
 
@@ -16,12 +17,28 @@ function readAuthorizationHeader(req: Request): AuthorizationHeader {
   return scheme === BEARER_SCHEME && token ? { kind: 'bearer', token } : { kind: 'malformed' };
 }
 
+function invalidToken(): HttpError {
+  return new HttpError(401, 'Invalid or expired token');
+}
+
+/**
+ * The user of a valid access token. Tokens signed with the same secret for another purpose (a
+ * password-reset or e-mail verification link) carry a `purpose` and never pass as one; tokens
+ * from before `typ` existed carry neither and still do until they expire.
+ */
 function decodeToken(token: string, jwtSecret: string): AuthenticatedUser {
+  let claims: AuthenticatedUser & { typ?: unknown; purpose?: unknown };
   try {
-    return jwt.verify(token, jwtSecret) as AuthenticatedUser;
+    claims = jwt.verify(token, jwtSecret) as typeof claims;
   } catch {
-    throw new HttpError(401, 'Invalid or expired token');
+    throw invalidToken();
   }
+  const isAccessToken =
+    claims.purpose === undefined &&
+    (claims.typ === undefined || claims.typ === ACCESS_TOKEN_TYPE) &&
+    claims.id !== undefined;
+  if (!isAccessToken) throw invalidToken();
+  return claims;
 }
 
 /** Requires a valid `Authorization: Bearer <jwt>` header and sets `req.user`. */

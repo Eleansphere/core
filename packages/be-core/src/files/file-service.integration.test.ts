@@ -56,6 +56,9 @@ describe('file service against Postgres', () => {
     });
   }
 
+  const storageKeyOf = async (fileId: string) =>
+    String((await core.models.File.findByPk(fileId))?.get('storageKey'));
+
   const createBook = async (token: string) =>
     (await request(core.app).post('/api/books').set('Authorization', token).send({ title: 'Dune' }))
       .body as { id: string };
@@ -68,7 +71,12 @@ describe('file service against Postgres', () => {
       schema: testSchema.name,
       jwtSecret: JWT_SECRET,
       modelConfigs: [bookConfig],
-      storage: { adapter: storage, authorize, singleRoles: ['cover'] },
+      storage: {
+        adapter: storage,
+        authorize,
+        singleRoles: ['cover'],
+        privateRoles: ['screenshot'],
+      },
     });
   });
 
@@ -97,12 +105,16 @@ describe('file service against Postgres', () => {
     const cover = { refType: 'book', refId: book.id, role: 'cover' };
 
     const first = await upload({ token: ALICE, fields: cover });
+    const firstKey = await storageKeyOf(first.body.id);
     const second = await upload({ token: ALICE, fields: cover });
 
-    const covers = await request(core.app).get('/api/files').query(cover);
+    const covers = await request(core.app)
+      .get('/api/files')
+      .set('Authorization', ALICE)
+      .query(cover);
     expect(covers.body.data.map((file: { id: string }) => file.id)).toEqual([second.body.id]);
-    expect(storage.objects.has(first.body.storageKey)).toBe(false);
-    expect(storage.objects.has(second.body.storageKey)).toBe(true);
+    expect(storage.objects.has(firstKey)).toBe(false);
+    expect(storage.objects.has(await storageKeyOf(second.body.id))).toBe(true);
   });
 
   it('serves a private file only to its uploader', async () => {
@@ -135,7 +147,61 @@ describe('file service against Postgres', () => {
     const res = await request(core.app).get(`/api/files/${avatar.body.id}`);
 
     expect(res.status).toBe(302);
-    expect(res.headers.location).toBe(`${PUBLIC_BASE_URL}/${avatar.body.storageKey}`);
+    expect(res.headers.location).toBe(`${PUBLIC_BASE_URL}/${await storageKeyOf(avatar.body.id)}`);
+    expect(res.headers.location).toBe(avatar.body.url);
+  });
+
+  it('never hands out the storage key', async () => {
+    const document = await upload({
+      token: ALICE,
+      fields: { refType: 'user', refId: 'u_alice', role: 'document', visibility: 'private' },
+    });
+
+    expect(document.body).not.toHaveProperty('storageKey');
+    expect(document.body.url).toBe(`/api/files/${document.body.id}`);
+  });
+
+  it('lists the files of one entity, for signed-in users only', async () => {
+    await upload({ token: ALICE, fields: { refType: 'user', refId: 'u_alice', role: 'avatar' } });
+    const ofAlice = { refType: 'user', refId: 'u_alice' };
+
+    expect((await request(core.app).get('/api/files').query(ofAlice)).status).toBe(401);
+    const everything = await request(core.app).get('/api/files').set('Authorization', BOB);
+    expect(everything.status).toBe(400);
+    const typeOnly = await request(core.app)
+      .get('/API/Files/')
+      .set('Authorization', BOB)
+      .query({ refType: 'user' });
+    expect(typeOnly.status).toBe(400);
+
+    const listed = await request(core.app)
+      .get('/api/files')
+      .set('Authorization', BOB)
+      .query({ ...ofAlice, role: 'avatar' });
+    expect(listed.status).toBe(200);
+    expect(listed.body.data).toHaveLength(1);
+    expect(listed.body.data[0]).not.toHaveProperty('storageKey');
+  });
+
+  it('stores the files of a private role as private, whatever the upload asks for', async () => {
+    const screenshot = await upload({
+      token: ALICE,
+      fields: { refType: 'user', refId: 'u_alice', role: 'screenshot', visibility: 'public' },
+    });
+
+    expect(screenshot.body.visibility).toBe('private');
+    expect((await request(core.app).get(`/api/files/${screenshot.body.id}`)).status).toBe(404);
+  });
+
+  it("keeps a private file's storage key from following its id", async () => {
+    const screenshot = await upload({
+      token: ALICE,
+      fields: { refType: 'user', refId: 'u_alice', role: 'screenshot' },
+    });
+
+    const key = await storageKeyOf(screenshot.body.id);
+    expect(key).toMatch(new RegExp(`^user/${screenshot.body.id}-[0-9a-f]{32}\\.png$`));
+    expect(screenshot.body.url).toBe(`/api/files/${screenshot.body.id}`);
   });
 
   it('deletes a file only for its uploader', async () => {
@@ -144,7 +210,8 @@ describe('file service against Postgres', () => {
 
     expect((await request(core.app).delete(fileUrl)).status).toBe(404);
     expect((await request(core.app).delete(fileUrl).set('Authorization', BOB)).status).toBe(404);
+    const key = await storageKeyOf(photo.body.id);
     expect((await request(core.app).delete(fileUrl).set('Authorization', ALICE)).status).toBe(204);
-    expect(storage.objects.has(photo.body.storageKey)).toBe(false);
+    expect(storage.objects.has(key)).toBe(false);
   });
 });

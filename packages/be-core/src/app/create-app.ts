@@ -3,12 +3,16 @@ import type { AddressInfo } from 'net';
 import express, { Express, RequestHandler, ErrorRequestHandler } from 'express';
 import { ModelStatic, Sequelize } from 'sequelize';
 import cors, { CorsOptions } from 'cors';
-import bodyParser from 'body-parser';
 import type { ModelConfig } from '@eleansphere/schema';
 import { createSequelize } from '../db/create-sequelize';
 import { applyReferences } from '../db/apply-references';
 import { Migration, runMigrations } from '../db/run-migrations';
-import { createAuthRouter, PasswordResetConfig, RegisterConfig } from '../auth/create-auth-router';
+import {
+  createAuthRouter,
+  EmailVerificationConfig,
+  PasswordResetConfig,
+  RegisterConfig,
+} from '../auth/create-auth-router';
 import { createOptionalUser } from '../auth/create-verify-token';
 import { RateLimitConfig } from '../auth/rate-limiter';
 import {
@@ -27,6 +31,7 @@ import { resolveModelAccess } from '../utils/model-access';
 import { parseDuration } from '../utils/duration';
 import { requiresRoleClaim } from '../access/access-rules';
 import { defaultErrorHandler } from './error-handler';
+import { securityHeaders } from './security-headers';
 import { EmailConfig, EmailService } from '../email/email-types';
 import { createEmailService } from '../email/create-email-service';
 import { StorageAdapter } from '../files/storage/storage-adapter';
@@ -66,6 +71,8 @@ export interface AuthAppConfig {
    */
   refreshTokens?: { expiresIn?: string };
   passwordReset?: PasswordResetConfig;
+  /** Sends new accounts a link that confirms their address (`POST /api/auth/verify-email`). */
+  emailVerification?: EmailVerificationConfig;
   register?: RegisterConfig;
   changePassword?: boolean;
   /** User columns `PATCH /api/auth/me` may change, e.g. `['displayName', 'locale']`. */
@@ -74,6 +81,13 @@ export interface AuthAppConfig {
   deleteAccount?: boolean;
   /** Per-client limit on credential routes. Default 20 per 15 minutes; `'off'` disables it. */
   rateLimit?: RateLimitConfig | 'off';
+  /**
+   * Per-account limit on failed logins and reset e-mails, from any client. Default 10 per 15
+   * minutes; off with `rateLimit: 'off'` too.
+   */
+  accountRateLimit?: RateLimitConfig | 'off';
+  /** bcrypt cost for new password hashes. Default 12. */
+  passwordHashRounds?: number;
 }
 
 export interface AppConfig {
@@ -96,6 +110,11 @@ export interface AppConfig {
   trustProxy?: boolean | number | string;
   plugins?: ProjectPlugin[];
   cors?: CorsOptions;
+  /**
+   * Sends `Content-Security-Policy`, `X-Frame-Options`, `nosniff`, HSTS and the like with every
+   * answer (`SECURITY_HEADERS`). Default `true`.
+   */
+  securityHeaders?: boolean;
   /** Global middleware registered before all routes (including auto-generated ones) */
   middleware?: RequestHandler[];
   email?: EmailConfig;
@@ -181,6 +200,7 @@ function mountFileService(
       authorize: storageConfig.authorize,
       allowedMimeTypes: storageConfig.allowedMimeTypes,
       singleRoles: storageConfig.singleRoles,
+      privateRoles: storageConfig.privateRoles,
       preferRedirect: storageConfig.preferRedirect,
       maxFileSize: storageConfig.maxFileSize,
     })
@@ -217,11 +237,14 @@ function mountAuth(
       refreshTokens: services.refreshTokens,
       emailService: services.emailService,
       passwordReset: auth.passwordReset,
+      emailVerification: auth.emailVerification,
       register: auth.register,
       changePassword: auth.changePassword,
       profileFields: auth.profileFields,
       deleteAccount: auth.deleteAccount,
       rateLimit: auth.rateLimit,
+      accountRateLimit: auth.accountRateLimit,
+      passwordHashRounds: auth.passwordHashRounds,
       beforeDeleteAccount:
         storage && fileModel
           ? async (user) => {
@@ -272,13 +295,14 @@ function buildCore(config: AppConfig): CoreInstance {
   const refreshTokens = createRefreshTokens(config.auth, allModels);
 
   const app = express();
+  app.disable('x-powered-by');
   if (config.trustProxy !== undefined) {
     app.set('trust proxy', config.trustProxy);
   }
 
+  if (config.securityHeaders !== false) app.use(securityHeaders);
   app.use(cors(config.cors));
   app.use(express.json());
-  app.use(bodyParser.json());
 
   // 4. Register global middleware before routes
   for (const mw of config.middleware ?? []) {

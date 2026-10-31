@@ -18,6 +18,11 @@ interface FileServiceConfig {
    * upload replaces (and deletes) the previous one.
    */
   singleRoles?: readonly string[];
+  /**
+   * Roles whose files are always stored `private`, whatever the upload asks for — e.g.
+   * `['screenshot']` for files only their uploader and a few others may see.
+   */
+  privateRoles?: readonly string[];
   /** Redirect public files to their CDN URL instead of proxying the bytes. Default `true`. */
   preferRedirect?: boolean;
   /** Max upload size in bytes. Default 25 MiB. */

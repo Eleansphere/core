@@ -188,6 +188,7 @@ without renewal.
 | `changePassword(current, next)` | `POST /api/auth/change-password` → new session |
 | `refresh(refreshToken)` / `logout(refreshToken)` | `POST /api/auth/refresh` / `logout` |
 | `forgotPassword(email)` / `resetPassword(token, newPassword)` | password reset |
+| `verifyEmail(token)` / `sendVerificationEmail()` | confirm the address from a verification link / send a new link |
 
 Type it with your user model: `AuthService<User, RegisterRequest & { displayName: string }, { displayName?: string }>`.
 
