@@ -6,6 +6,7 @@ export type { WhereOptions } from 'sequelize';
 export { createApp, createCore } from './app/create-app';
 export type { AppConfig, AuthAppConfig, CoreInstance, SyncMode } from './app/create-app';
 export { defaultErrorHandler, HttpError, ValidationError } from './app/error-handler';
+export { securityHeaders, SECURITY_HEADERS } from './app/security-headers';
 
 // Database
 export { createSequelize } from './db/create-sequelize';
@@ -77,20 +78,27 @@ export { combineWhere } from './utils/combine-where';
 export { parseDuration } from './utils/duration';
 
 // Auth
-export { createAuthRouter } from './auth/create-auth-router';
+export { createAuthRouter, normalizeEmail, PASSWORD_MAX_BYTES } from './auth/create-auth-router';
 export type {
   AuthConfig,
   RegisterConfig,
   PasswordResetConfig,
+  EmailVerificationConfig,
   SessionResponse,
 } from './auth/create-auth-router';
+export { ACCESS_TOKEN_TYPE } from './auth/tokens';
 export {
   createVerifyToken,
   createExtractUser,
   createOptionalUser,
   createRequireRole,
 } from './auth/create-verify-token';
-export { createRateLimiter, DEFAULT_AUTH_RATE_LIMIT } from './auth/rate-limiter';
+export {
+  createRateLimiter,
+  DEFAULT_ACCOUNT_RATE_LIMIT,
+  DEFAULT_AUTH_RATE_LIMIT,
+  routeKey,
+} from './auth/rate-limiter';
 export type { RateLimitConfig, RateLimiterOptions } from './auth/rate-limiter';
 export {
   createRefreshTokenStore,
@@ -103,6 +111,7 @@ export type { RefreshTokenStore, RotatedRefreshToken } from './auth/refresh-toke
 export {
   createFileServiceRouter,
   DEFAULT_ALLOWED_MIME_TYPES,
+  MAX_LISTED_FILES,
 } from './files/create-file-service-router';
 export type { FileServiceRouterOptions } from './files/create-file-service-router';
 export { defaultFileAuthorizer } from './files/file-access';

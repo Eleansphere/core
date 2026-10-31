@@ -2,11 +2,11 @@ export type FileVisibility = 'public' | 'private';
 
 /**
  * Client-facing shape of a file served by the be-core detached file service
- * (`GET /api/files`, `POST /api/files`). Structurally matches be-core's `FileDto`.
+ * (`GET /api/files`, `POST /api/files`). Structurally matches be-core's `FileDto`; the bucket's
+ * object key stays on the server.
  */
 export interface FileDto {
   id: string;
-  storageKey: string;
   originalName: string | null;
   mimeType: string;
   size: number;

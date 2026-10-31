@@ -80,10 +80,9 @@ export function defaultErrorHandler(
     : err.name !== 'Error'
       ? err.name
       : 'Error';
-  const message =
-    sequelizeStatus && err.errors?.length
-      ? err.errors.map((e) => e.message).join(', ')
-      : err.message;
+  // A database error's own message names tables and columns: the client gets the status's name,
+  // and the fields in `issues`.
+  const message = sequelizeStatus ? HTTP_STATUS_NAMES[statusCode] : err.message;
   const issues = err.issues ?? uniqueConstraintIssues(err);
 
   res

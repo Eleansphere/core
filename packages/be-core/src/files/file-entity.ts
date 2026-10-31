@@ -26,8 +26,12 @@ export interface FileRecord {
   updatedAt: string;
 }
 
-/** `FileRecord` plus the resolved URL a client should load. */
-export interface FileDto extends FileRecord {
+/**
+ * `FileRecord` without its `storageKey`, plus the resolved URL a client should load. The key stays
+ * on the server: a bucket with a public address serves any key it is asked for, private files
+ * included.
+ */
+export interface FileDto extends Omit<FileRecord, 'storageKey'> {
   /** Absolute CDN URL for public files; otherwise the relative `/api/files/:id` path. */
   url: string;
 }
@@ -61,8 +65,7 @@ export function toFileDto(
   record: { toJSON: () => Record<string, unknown> },
   storage: StorageAdapter
 ): FileDto {
-  const json = record.toJSON() as unknown as FileRecord;
-  const publicUrl =
-    json.visibility === 'public' ? storage.getPublicUrl(json.storageKey) : undefined;
+  const { storageKey, ...json } = record.toJSON() as unknown as FileRecord;
+  const publicUrl = json.visibility === 'public' ? storage.getPublicUrl(storageKey) : undefined;
   return { ...json, url: publicUrl ?? `/api/files/${json.id}` };
 }

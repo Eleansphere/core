@@ -5,10 +5,27 @@
  * without needing Postgres.
  */
 
+import { Op } from 'sequelize';
+
 type Row = Record<string, any>;
 
+/** A LIKE pattern without wildcards (what the auth router sends), unescaped. */
+function unescapeLike(pattern: string): string {
+  return pattern.replace(/\\(.)/g, '$1');
+}
+
+function matchesValue(actual: unknown, expected: unknown): boolean {
+  if (expected !== null && typeof expected === 'object' && Op.iLike in expected) {
+    const pattern = (expected as Record<symbol, string>)[Op.iLike];
+    return (
+      typeof actual === 'string' && actual.toLowerCase() === unescapeLike(pattern).toLowerCase()
+    );
+  }
+  return actual === expected;
+}
+
 function matchesWhere(row: Row, where: Row = {}): boolean {
-  return Object.entries(where).every(([key, value]) => row[key] === value);
+  return Object.entries(where).every(([key, value]) => matchesValue(row[key], value));
 }
 
 function attachInstanceMethods(row: Row, rows: Row[]): Row {

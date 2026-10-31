@@ -30,6 +30,7 @@ function buildApp(UserModel: FakeModel, overrides: Partial<AuthConfig> = {}) {
       jwtSecret: JWT_SECRET,
       userFields,
       rateLimit: 'off',
+      passwordHashRounds: BCRYPT_TEST_ROUNDS,
       ...overrides,
     })
   );
@@ -270,6 +271,32 @@ describe('createAuthRouter — configuration', () => {
 
     expect((await attempt()).status).toBe(401);
     expect((await attempt()).status).toBe(429);
+  });
+
+  it('limits failed logins per account, whatever the client, and lets the owner in', async () => {
+    const app = buildApp(await withAlice(), {
+      rateLimit: { windowMs: 60_000, max: 100 },
+      accountRateLimit: { windowMs: 60_000, max: 2 },
+    });
+    const attempt = (email: string, password: string) =>
+      request(app).post('/api/auth/login').send({ email, password });
+
+    expect((await attempt('a@b.com', PASSWORD)).status).toBe(200);
+    expect((await attempt('a@b.com', 'wrong-password')).status).toBe(401);
+    expect((await attempt('A@B.com ', 'wrong-password')).status).toBe(401);
+    expect((await attempt('a@b.com', PASSWORD)).status).toBe(429);
+    expect((await attempt('nobody@b.com', 'wrong-password')).status).toBe(401);
+  });
+
+  it('shares the client budget between spellings of a route', async () => {
+    const app = buildApp(await withAlice(), { rateLimit: { windowMs: 60_000, max: 1 } });
+
+    await request(app).post('/api/auth/login').send({ email: 'a@b.com', password: 'nope' });
+    const spelledDifferently = await request(app)
+      .post('/API/Auth/LOGIN/')
+      .send({ email: 'a@b.com', password: 'nope' });
+
+    expect(spelledDifferently.status).toBe(429);
   });
 
   it('refuses password reset without an email service', async () => {

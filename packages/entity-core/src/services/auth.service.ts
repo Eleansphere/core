@@ -103,4 +103,17 @@ export class AuthService<
   resetPassword(token: string, newPassword: string): Promise<MessageResponse> {
     return this.post<MessageResponse>(`${AUTH_PATH}/reset-password`, { token, newPassword });
   }
+
+  /**
+   * Confirms the address with the token from a verification link; answers with the user. Needs
+   * the server's `auth.emailVerification`; works signed in or not.
+   */
+  verifyEmail(token: string): Promise<TUser> {
+    return this.post<TUser>(`${AUTH_PATH}/verify-email`, { token });
+  }
+
+  /** Sends the signed-in user a new verification link (nothing when already verified). */
+  sendVerificationEmail(): Promise<void> {
+    return this.post<void>(`${AUTH_PATH}/verification-email`, {});
+  }
 }

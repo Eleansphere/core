@@ -21,6 +21,8 @@ export interface FileServiceRouterOptions {
   allowedMimeTypes?: readonly string[] | 'any';
   /** Roles holding one file per `refType` + `refId`; a new upload replaces the previous one. */
   singleRoles?: readonly string[];
+  /** Roles whose files are always stored `private`, whatever the upload asks for. */
+  privateRoles?: readonly string[];
   /** 302-redirect public files to their CDN URL instead of proxying. Default `true`. */
   preferRedirect?: boolean;
   /** Max upload size in bytes. Default 25 MiB. */
@@ -41,7 +43,8 @@ const UPLOAD_FIELD = 'file';
 const PUBLIC_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 const PRIVATE_CACHE_CONTROL = 'private, max-age=0';
 const RANGE_PATTERN = /^bytes=(\d*)-(\d*)$/;
-const ATTACHMENT_KEYS = ['refType', 'refId', 'role'] as const;
+/** At most this many files answer one list request. */
+export const MAX_LISTED_FILES = 100;
 
 const EXTENSION_BY_MIME: Record<string, string> = {
   'image/jpeg': '.jpg',
@@ -84,7 +87,8 @@ function fileNotFound(): HttpError {
  *
  * - `POST   /`          multipart field `file` + optional body `refType`, `refId`, `role`,
  *                       `visibility`, `sortOrder` → `201 { ...FileDto }`
- * - `GET    /`          `?refType=&refId=&role=` → `{ data: FileDto[], total }` (readable files only)
+ * - `GET    /`          `?refType=&refId=` (+ optional `&role=`), signed in only →
+ *                       `{ data: FileDto[], total }` (readable files only, at most 100)
  * - `GET    /:id`       redirect to CDN URL (public) or proxy-stream with range + ETag support
  * - `GET    /:id/meta`  the `FileDto` as JSON
  * - `DELETE /:id`       remove bytes + row
@@ -100,6 +104,7 @@ export function createFileServiceRouter(
     authorize = defaultFileAuthorizer,
     allowedMimeTypes = DEFAULT_ALLOWED_MIME_TYPES,
     singleRoles = [],
+    privateRoles = [],
     preferRedirect = true,
     maxFileSize = DEFAULT_MAX_FILE_SIZE,
   } = options;
@@ -182,7 +187,10 @@ export function createFileServiceRouter(
       }
 
       const id = generateId(FILE_ID_PREFIX);
-      const visibility = normalizeVisibility(body.visibility);
+      const visibility =
+        attachment.role && privateRoles.includes(attachment.role)
+          ? 'private'
+          : normalizeVisibility(body.visibility);
       const folder = attachment.refType ? sanitizeSegment(attachment.refType) : 'misc';
       const storageKey = `${folder}/${id}${fileExtension(req.file.originalname, req.file.mimetype)}`;
       const checksum = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
@@ -211,21 +219,26 @@ export function createFileServiceRouter(
     })
   );
 
+  // Only what one entity holds, and only for a signed-in user: listing every file at once would
+  // hand out what all users uploaded.
   router.get(
     '/',
     ...resolveUser,
     handle(async (req, res) => {
-      const where: Record<string, string> = {};
-      for (const key of ATTACHMENT_KEYS) {
-        const value = optionalString(req.query[key]);
-        if (value) where[key] = value;
+      if (!req.user) throw authenticationRequired();
+      const refType = optionalString(req.query.refType);
+      const refId = optionalString(req.query.refId);
+      if (!refType || !refId) {
+        throw new HttpError(400, 'Listing files needs both "refType" and "refId"');
       }
+      const role = optionalString(req.query.role);
       const rows: Model[] = await FileModel.findAll({
-        where,
+        where: { refType, refId, ...(role ? { role } : {}) },
         order: [
           ['sortOrder', 'ASC'],
           ['createdAt', 'ASC'],
         ],
+        limit: MAX_LISTED_FILES,
       });
       const readable: Model[] = [];
       for (const row of rows) {

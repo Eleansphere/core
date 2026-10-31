@@ -96,6 +96,7 @@ one-call form: it prepares the schema, then listens, and returns the Express app
 | `email` | `EmailConfig` | `{ from, transport }`, see [Email](#email) |
 | `storage` | `StorageConfig` | Enables the [file service](#file-service) |
 | `cors` | `CorsOptions` | Passed to `cors` |
+| `securityHeaders` | `boolean` | `Content-Security-Policy`, `X-Frame-Options`, `nosniff`, HSTS and `Referrer-Policy` on every answer (`SECURITY_HEADERS`). Default `true` |
 | `middleware` | `RequestHandler[]` | Registered before every route |
 | `errorHandler` | `ErrorRequestHandler` | Replaces `defaultErrorHandler` |
 
@@ -387,18 +388,33 @@ validate registration, profile changes and new passwords.
 | `DELETE` | `/me` | `deleteAccount` | `{ password }` → `204`; owned rows cascade, uploaded files are deleted |
 | `POST` | `/forgot-password` | `passwordReset` | `{ email }` → always `200`; emails a link when the account exists |
 | `POST` | `/reset-password` | `passwordReset` | `{ token, newPassword }`; the link works once |
+| `POST` | `/verify-email` | `emailVerification` | `{ token }` → the user, with the verification time set |
+| `POST` | `/verification-email` | `emailVerification` | signed in → `202`; e-mails a new link while the address is unverified |
 
 A **session** is `{ token, refreshToken?, id, email, role, user }`. The access token carries `id`,
-`email` and the `tokenClaims` columns; `expiresIn` defaults to `30m` (keep it short with refresh
-tokens). Refresh tokens (`refreshTokens: { expiresIn: '60d' }`) are stored hashed and rotate on
+`email`, `typ: 'access'` and the `tokenClaims` columns; `expiresIn` defaults to `30m` (keep it short with refresh
+tokens). Tokens signed for anything else (reset and verification links) are never accepted as one. Refresh tokens (`refreshTokens: { expiresIn: '60d' }`) are stored hashed and rotate on
 every use; presenting an already used one revokes its whole family.
 
 `register: { idPrefix, fields, defaults }` accepts `email`, `password` and the listed `fields`;
 `defaults` (e.g. `{ role: 'user' }`) fill the rest. `passwordReset: { appBaseUrl, resetPath?,
-tokenExpiresIn?, template }` needs `AppConfig.email`.
+tokenExpiresIn?, template }` needs `AppConfig.email`; the template gets `{ resetLink, user }`.
+
+`emailVerification: { appBaseUrl, verifyPath?, tokenExpiresIn?, field?, template }` (also needs
+`AppConfig.email`) e-mails every new account a link to `appBaseUrl + verifyPath` (default
+`/verify-email`) `?token=`, valid `7d` and only for the address it was sent to; `POST /verify-email`
+sets `field` (default `emailVerifiedAt`, a `DATE` column of the user model, best `readOnly`).
+The template gets `{ verifyLink, user }`.
+
+E-mail addresses are stored trimmed and in lower case, and found whatever their case (accounts
+stored before that included). A new password longer than bcrypt's 72 bytes is a `maxLength`
+issue; new hashes use cost 12 (`passwordHashRounds`). An unknown e-mail takes as long to refuse as a
+wrong password.
 
 Login, registration, password and account-deletion routes are rate-limited per client (default
-20 per 15 minutes; `rateLimit: { windowMs, max }` or `'off'`). Behind a proxy set `trustProxy`.
+20 per 15 minutes; `rateLimit: { windowMs, max }` or `'off'`), counted per route however its path
+is spelled. Failed logins and reset e-mails are also limited per account, from any client
+(`accountRateLimit`, default 10 per 15 minutes). Behind a proxy set `trustProxy`.
 
 Middleware for custom routes:
 
@@ -406,7 +422,7 @@ Middleware for custom routes:
 - `createOptionalUser(secret)`: sets `req.user` when a valid token is sent, lets anonymous requests through, rejects invalid tokens
 - `createRequireRole(...roles)`: after one of the above, `403` unless `req.user.role` is listed
 - `evaluateAccess(rule, req)`: checks an access policy or function, returns `{ scope, ownerId }`
-- `createRateLimiter({ windowMs, max, keyOf? })`: the limiter used by the auth routes
+- `createRateLimiter({ windowMs, max, keyOf?, skipSuccessfulRequests? })`: the limiter used by the auth routes; `routeKey(req)` is the route a request matched, however it was spelled
 
 ## Email
 
@@ -456,6 +472,7 @@ storage: {
 | `authorize` | `defaultFileAuthorizer` | decides `create` / `read` / `delete`; see below |
 | `allowedMimeTypes` | JPEG, PNG, WebP, AVIF, GIF, PDF | `'any'` disables the check; SVG is not allowed by default |
 | `singleRoles` | `[]` | roles holding one file per `refType` + `refId`: a new upload replaces the old one |
+| `privateRoles` | `[]` | roles whose files are always stored `private`, whatever the upload asks for |
 | `writeMiddleware` | `[]` | extra middleware in front of `POST` and `DELETE` |
 | `preferRedirect` | `true` | redirect public files to the CDN instead of proxying |
 | `maxFileSize` | 25 MiB | |
@@ -468,10 +485,13 @@ read or delete is `404`. Compose it with your own rules, as above.
 | Method | Path | |
 |---|---|---|
 | `POST` | `/api/files` | multipart `file` + `refType`, `refId`, `role`, `visibility`, `sortOrder` → `FileDto` |
-| `GET` | `/api/files?refType=&refId=&role=` | readable files: `{ data: FileDto[], total }` |
+| `GET` | `/api/files?refType=&refId=&role=` | signed in, `refType` and `refId` required: the readable files (100 at most), `{ data: FileDto[], total }` |
 | `GET` | `/api/files/:id` | redirect (public) or stream with `ETag`, `Range`, `nosniff` |
 | `GET` | `/api/files/:id/meta` | `FileDto` |
 | `DELETE` | `/api/files/:id` | removes bytes and row |
+
+A `FileDto` never carries the `storageKey`: a bucket with a public address serves any key it is
+asked for, so the key of a private file stays on the server.
 
 `attachFiles(models.File, storage, refType, rows, { role, as })` batch-loads the files of many rows
 in one query; use it in `enrich`. `deleteFilesOwnedBy(models.File, storage, userId)` removes a
