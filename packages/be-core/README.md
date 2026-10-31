@@ -472,7 +472,7 @@ storage: {
 | `authorize` | `defaultFileAuthorizer` | decides `create` / `read` / `delete`; see below |
 | `allowedMimeTypes` | JPEG, PNG, WebP, AVIF, GIF, PDF | `'any'` disables the check; SVG is not allowed by default |
 | `singleRoles` | `[]` | roles holding one file per `refType` + `refId`: a new upload replaces the old one |
-| `privateRoles` | `[]` | roles whose files are always stored `private`, whatever the upload asks for |
+| `privateRoles` | `[]` | roles whose files are always stored `private`, whatever the upload asks for; a private file's storage key carries a random part (`fileStorageName`), so a bucket that serves every key can't be read from the file id |
 | `writeMiddleware` | `[]` | extra middleware in front of `POST` and `DELETE` |
 | `preferRedirect` | `true` | redirect public files to the CDN instead of proxying |
 | `maxFileSize` | 25 MiB | |

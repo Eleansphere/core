@@ -15,6 +15,7 @@ Security hardening.
 - An unknown e-mail takes as long to refuse at login as a wrong password.
 - Password-reset e-mails go to the stored address, and the template also gets `user`.
 - `auth.emailVerification` e-mails new accounts a link to confirm their address (`POST /api/auth/verify-email`, `POST /api/auth/verification-email`); entity-core's `AuthService` gets `verifyEmail(token)` and `sendVerificationEmail()`.
-- `storage.privateRoles`: roles whose files are always stored `private`.
+- `storage.privateRoles`: roles whose files are always stored `private`. A private file's storage key
+  now carries a random part (`fileStorageName`), so a public bucket can't be read from a file id.
 - Every answer carries security headers (`Content-Security-Policy`, `X-Frame-Options`, `nosniff`, HSTS, `Referrer-Policy`) and no `X-Powered-By`; `securityHeaders: false` turns them off.
 - Dependencies: Express 4.22, multer 2.5, nodemailer 10, Sequelize 6.37.8; `body-parser` is no longer a direct dependency.

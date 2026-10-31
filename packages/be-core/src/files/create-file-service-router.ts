@@ -59,6 +59,19 @@ function sanitizeSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'misc';
 }
 
+/** Random bytes in a private file's storage key. */
+const PRIVATE_KEY_SECRET_BYTES = 16;
+
+/**
+ * A public file is stored under its id. A private file's key adds a random part, so a bucket that
+ * serves every key publicly (as an R2 bucket with a public domain does) can't be read by someone
+ * who knows only the file's id.
+ */
+export function fileStorageName(id: string, visibility: 'public' | 'private'): string {
+  if (visibility === 'public') return id;
+  return `${id}-${crypto.randomBytes(PRIVATE_KEY_SECRET_BYTES).toString('hex')}`;
+}
+
 function fileExtension(originalName: string | undefined, mimeType: string): string {
   const fromName = originalName ? path.extname(originalName).toLowerCase() : '';
   if (/^\.[a-z0-9]{1,8}$/.test(fromName)) return fromName;
@@ -192,7 +205,7 @@ export function createFileServiceRouter(
           ? 'private'
           : normalizeVisibility(body.visibility);
       const folder = attachment.refType ? sanitizeSegment(attachment.refType) : 'misc';
-      const storageKey = `${folder}/${id}${fileExtension(req.file.originalname, req.file.mimetype)}`;
+      const storageKey = `${folder}/${fileStorageName(id, visibility)}${fileExtension(req.file.originalname, req.file.mimetype)}`;
       const checksum = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
 
       await storage.put(storageKey, req.file.buffer, {

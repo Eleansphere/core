@@ -193,6 +193,17 @@ describe('file service against Postgres', () => {
     expect((await request(core.app).get(`/api/files/${screenshot.body.id}`)).status).toBe(404);
   });
 
+  it("keeps a private file's storage key from following its id", async () => {
+    const screenshot = await upload({
+      token: ALICE,
+      fields: { refType: 'user', refId: 'u_alice', role: 'screenshot' },
+    });
+
+    const key = await storageKeyOf(screenshot.body.id);
+    expect(key).toMatch(new RegExp(`^user/${screenshot.body.id}-[0-9a-f]{32}\\.png$`));
+    expect(screenshot.body.url).toBe(`/api/files/${screenshot.body.id}`);
+  });
+
   it('deletes a file only for its uploader', async () => {
     const photo = await upload({ token: ALICE, fields: { refType: 'user', refId: 'u_alice' } });
     const fileUrl = `/api/files/${photo.body.id}`;

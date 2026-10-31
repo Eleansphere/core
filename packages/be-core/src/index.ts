@@ -112,6 +112,7 @@ export {
   createFileServiceRouter,
   DEFAULT_ALLOWED_MIME_TYPES,
   MAX_LISTED_FILES,
+  fileStorageName,
 } from './files/create-file-service-router';
 export type { FileServiceRouterOptions } from './files/create-file-service-router';
 export { defaultFileAuthorizer } from './files/file-access';
